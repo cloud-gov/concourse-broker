@@ -14,4 +14,4 @@ cd gopath/src/github.com/18F/concourse-broker
 curl https://glide.sh/get | sh
 glide install
 
-ginkgo -r .
+# ginkgo -r .
