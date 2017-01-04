@@ -1,0 +1,197 @@
+---
+jobs:
+- name: test-concourse-broker
+  plan:
+  - get: broker-src
+    trigger: true
+  - task: run-tests
+    file: broker-src/ci/run-tests.yml
+
+- name: push-concourse-broker-staging
+  serial_groups: [staging]
+  serial: true
+  plan:
+  - aggregate:
+    - get: broker-src
+      passed: [test-concourse-broker]
+      trigger: true
+    - get: pipeline-tasks
+  - put: broker-deploy-staging
+    params:
+      path: broker-src
+      manifest: broker-src/manifest.yml
+      environment_variables:
+        BROKER_USERNAME: {{broker-username-staging}}
+        BROKER_PASSWORD: {{broker-password-staging}}
+        ADMIN_USERNAME: {{concourse-username-staging}}
+        ADMIN_PASSWORD: {{concourse-password-staging}}
+        CONCOURSE_URL: {{concourse-url-staging}}
+        CF_URL: {{cf-api-url-staging}}
+        AUTH_URL: {{auth-url-staging}}
+        TOKEN_URL: {{token-url-staging}}
+        CLIENT_ID: {{client-id-staging}}
+        CLIENT_SECRET: {{client-secret-staging}}
+  - task: update-broker
+    file: pipeline-tasks/register-service-broker.yml
+    params:
+      CF_API_URL: {{cf-api-url-staging}}
+      CF_USERNAME: {{cf-deploy-username-staging}}
+      CF_PASSWORD: {{cf-deploy-password-staging}}
+      CF_ORGANIZATION: {{cf-organization-staging}}
+      CF_SPACE: {{cf-space-staging}}
+      BROKER_NAME: concourse-broker
+      AUTH_USER: {{broker-username-staging}}
+      AUTH_PASS: {{broker-password-staging}}
+      SERVICES: concourse-ci
+  on_failure:
+    put: slack
+    params:
+      text: |
+        :x: FAILED to deploy concourse-broker on {{cf-api-url-staging}}
+        <$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME|View build details>
+      channel: {{slack-channel}}
+      username: {{slack-username}}
+      icon_url: {{slack-icon-url}}
+  on_success:
+    put: slack
+    params:
+      text: |
+        :white_check_mark: Successfully deployed concourse-broker on {{cf-api-url-staging}}
+        <$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME|View build details>
+      channel: {{slack-channel}}
+      username: {{slack-username}}
+      icon_url: {{slack-icon-url}}
+
+- name: concourse-broker-acceptance-tests-staging
+  serial_groups: [staging]
+  serial: true
+  plan:
+  - get: broker-src
+    passed: [push-concourse-broker-staging]
+    trigger: true
+  - task: acceptance-tests-staging
+    file: broker-src/ci/acceptance-tests.yml
+    params:
+      CF_API_URL: {{cf-api-url-staging}}
+      CF_USERNAME: {{cf-deploy-username-staging}}
+      CF_PASSWORD: {{cf-deploy-password-staging}}
+      CF_ORGANIZATION: {{cf-organization-staging}}
+      CF_SPACE: {{cf-space-staging}}
+      PLAN_NAME: concourse-ci
+      SERVICE_INSTANCE_NAME: concourse-ci-acceptance
+
+- name: push-concourse-broker-production
+  serial_groups: [production]
+  serial: true
+  plan:
+  - aggregate:
+    - get: broker-src
+      passed: [concourse-broker-acceptance-tests-staging]
+      trigger: true
+    - get: pipeline-tasks
+      passed: [push-concourse-broker-staging]
+  - put: broker-deploy-production
+    params:
+      path: broker-src
+      manifest: broker-src/manifest.yml
+      environment_variables:
+        BROKER_USERNAME: {{broker-username-production}}
+        BROKER_PASSWORD: {{broker-password-production}}
+        ADMIN_USERNAME: {{concourse-username-production}}
+        ADMIN_PASSWORD: {{concourse-password-production}}
+        CONCOURSE_URL: {{concourse-url-production}}
+        CF_URL: {{cf-api-url-production}}
+        AUTH_URL: {{auth-url-production}}
+        TOKEN_URL: {{token-url-production}}
+        CLIENT_ID: {{client-id-production}}
+        CLIENT_SECRET: {{client-secret-production}}
+  - task: update-broker
+    file: pipeline-tasks/register-service-broker.yml
+    params:
+      CF_API_URL: {{cf-api-url-production}}
+      CF_USERNAME: {{cf-deploy-username-production}}
+      CF_PASSWORD: {{cf-deploy-password-production}}
+      CF_ORGANIZATION: {{cf-organization-production}}
+      CF_SPACE: {{cf-space-production}}
+      BROKER_NAME: concourse-broker
+      AUTH_USER: {{broker-username-production}}
+      AUTH_PASS: {{broker-password-production}}
+      SERVICES: concourse-ci
+  on_failure:
+    put: slack
+    params:
+      text: |
+        :x: FAILED to deploy concourse-broker on {{cf-api-url-production}}
+        <$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME|View build details>
+      channel: {{slack-channel}}
+      username: {{slack-username}}
+      icon_url: {{slack-icon-url}}
+  on_success:
+    put: slack
+    params:
+      text: |
+        :white_check_mark: Successfully deployed concourse-broker on {{cf-api-url-production}}
+        <$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME|View build details>
+      channel: {{slack-channel}}
+      username: {{slack-username}}
+      icon_url: {{slack-icon-url}}
+
+- name: concourse-broker-acceptance-tests-production
+  serial_groups: [production]
+  serial: true
+  plan:
+  - get: broker-src
+    passed: [push-concourse-broker-production]
+    trigger: true
+  - task: acceptance-tests-production
+    file: broker-src/acceptance-tests.yml
+    params:
+      CF_API_URL: {{cf-api-url-production}}
+      CF_USERNAME: {{cf-deploy-username-production}}
+      CF_PASSWORD: {{cf-deploy-password-production}}
+      CF_ORGANIZATION: {{cf-organization-production}}
+      CF_SPACE: {{cf-space-production}}
+      PLAN_NAME: concourse-ci
+      SERVICE_INSTANCE_NAME: concourse-ci-acceptance
+
+resources:
+- name: broker-src
+  type: git
+  source:
+    uri: {{concourse-broker-git-url}}
+    branch: {{concourse-broker-git-branch}}
+
+- name: pipeline-tasks
+  type: git
+  source:
+    uri: {{pipeline-tasks-git-url}}
+    branch: {{pipeline-tasks-git-branch}}
+
+- name: broker-deploy-staging
+  type: cf
+  source:
+    api: {{cf-api-url-staging}}
+    username: {{cf-deploy-username-staging}}
+    password: {{cf-deploy-password-staging}}
+    organization: {{cf-organization-staging}}
+    space: {{cf-space-staging}}
+
+- name: broker-deploy-production
+  type: cf
+  source:
+    api: {{cf-api-url-production}}
+    username: {{cf-deploy-username-production}}
+    password: {{cf-deploy-password-production}}
+    organization: {{cf-organization-production}}
+    space: {{cf-space-production}}
+
+- name: slack
+  type: slack-notification
+  source:
+    url: {{slack-webhook-url}}
+
+resource_types:
+- name: slack-notification
+  type: docker-image
+  source:
+    repository: cfcommunity/slack-notification-resource
