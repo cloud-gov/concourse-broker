@@ -8,3 +8,7 @@ import:
 - package: github.com/concourse/atc
 - package: github.com/kelseyhightower/envconfig
   version: v1.2.0
+- package: golang.org/x/oauth2
+- package: golang.org/x/net
+  subpackages:
+  - context

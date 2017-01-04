@@ -1,5 +1,5 @@
-hash: 74490795f726b5d9d070e7dc3207fb9e09ee09df0cc2986592666ac83ec32076
-updated: 2017-01-04T09:30:08.502658652-05:00
+hash: d2e924f84d5e0a236fbb79be27e84896fc2beb3e8e5447285a97c1695cbf8149
+updated: 2017-01-04T12:07:19.745466297-05:00
 imports:
 - name: code.cloudfoundry.org/lager
   version: 62951a8009ab331bb21dc418074fa54e66eb9b6a
@@ -15,6 +15,10 @@ imports:
   - concourse
   - concourse/eventstream
   - concourse/internal
+- name: github.com/golang/protobuf
+  version: 7cc19b78d562895b13596ddce7aafb59dd789318
+  subpackages:
+  - proto
 - name: github.com/gorilla/context
   version: a8d44e7d8e4d532b6a27a02dd82abb31cc1b01bd
 - name: github.com/gorilla/mux
@@ -39,6 +43,24 @@ imports:
   version: fd69d275caac5d78d793e77ddbe9bd2001d9b88d
   subpackages:
   - sse
+- name: golang.org/x/net
+  version: 3b993948b6f0e651ffb58ba135d8538a68b1cddf
+  subpackages:
+  - context
+- name: golang.org/x/oauth2
+  version: e86e2718db89775a4604abc10a5d3a5672e7336e
+  subpackages:
+  - internal
+- name: google.golang.org/appengine
+  version: e234e71924d4aa52444bc76f2f831f13fa1eca60
+  subpackages:
+  - internal
+  - internal/base
+  - internal/datastore
+  - internal/log
+  - internal/remote_api
+  - internal/urlfetch
+  - urlfetch
 - name: gopkg.in/yaml.v2
   version: e4d366fc3c7938e2958e662b4258c7a89e1f0e3e
 testImports: []

@@ -13,6 +13,7 @@ import (
 	"net"
 	"time"
 	"log"
+	"golang.org/x/oauth2"
 )
 
 const adminTeam = "main"
@@ -73,6 +74,29 @@ type concourseClient struct {
 	client concourse.Client
 }
 
+func (c *concourseClient) getAuthClient(concourseURL string) (concourse.Client, error) {
+	team := c.client.Team(adminTeam)
+	token, err := team.AuthToken()
+	if err != nil {
+		return nil, err
+	}
+	var oAuthToken *oauth2.Token
+	oAuthToken = &oauth2.Token{
+		TokenType:   token.Type,
+		AccessToken: token.Value,
+	}
+
+	transport := transport(false, nil)
+
+	transport = &oauth2.Transport{
+		Source: oauth2.StaticTokenSource(oAuthToken),
+		Base:   transport,
+	}
+
+	httpClient := &http.Client{Transport: transport}
+	return concourse.NewClient(concourseURL, httpClient), nil
+}
+
 func (c *concourseClient) CreateTeam(details cf.Details, env config.Env) error {
 	fmt.Println("made it")
 	teamName := details.OrgName
@@ -88,7 +112,12 @@ func (c *concourseClient) CreateTeam(details cf.Details, env config.Env) error {
 			CFURL: env.CFURL,
 		},
 	}
-	_, created, updated, err := c.client.Team(teamName).CreateOrUpdate(team)
+	client, err := c.getAuthClient(env.ConcourseURL)
+	if err != nil {
+		log.Println("can't get auth client")
+		return err
+	}
+	_, created, updated, err := client.Team(teamName).CreateOrUpdate(team)
 	if err != nil {
 		log.Printf("Unable to create team %s\n", team.Name)
 		return err
