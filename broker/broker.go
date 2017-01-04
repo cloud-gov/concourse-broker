@@ -6,6 +6,8 @@ import (
 	"errors"
 	"github.com/pivotal-cf/brokerapi"
 	"github.com/18F/concourse-broker/config"
+	"github.com/18F/concourse-broker/concourse"
+	"github.com/18F/concourse-broker/cf"
 )
 
 // New returns a new concourse service broker instance.
@@ -25,6 +27,12 @@ func (c *concourseBroker) Services(context context.Context) []brokerapi.Service 
 
 func (c *concourseBroker) Provision(context context.Context, instanceID string,
 	details brokerapi.ProvisionDetails, asyncAllowed bool) (brokerapi.ProvisionedServiceSpec, error) {
+	cfDetails := cf.Details{OrgName:"testorg", SpaceGUID:details.SpaceGUID}
+	concourseClient := concourse.NewClient(c.env)
+	err := concourseClient.CreateTeam(cfDetails, c.env)
+	if err != nil {
+		return brokerapi.ProvisionedServiceSpec{}, err
+	}
 	return brokerapi.ProvisionedServiceSpec{}, nil
 }
 
