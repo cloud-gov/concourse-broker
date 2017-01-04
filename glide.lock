@@ -1,0 +1,44 @@
+hash: 74490795f726b5d9d070e7dc3207fb9e09ee09df0cc2986592666ac83ec32076
+updated: 2017-01-04T09:30:08.502658652-05:00
+imports:
+- name: code.cloudfoundry.org/lager
+  version: 62951a8009ab331bb21dc418074fa54e66eb9b6a
+- name: github.com/bmizerany/pat
+  version: c068ca2f0aacee5ac3681d68e4d0a003b7d1fd2c
+- name: github.com/concourse/atc
+  version: 6085c91ef07ca0596bdf791a2801aaa84e467d8c
+  subpackages:
+  - event
+- name: github.com/concourse/go-concourse
+  version: b78e4c86d2e9663cb9bb72d03ea0a6795383c8aa
+  subpackages:
+  - concourse
+  - concourse/eventstream
+  - concourse/internal
+- name: github.com/gorilla/context
+  version: a8d44e7d8e4d532b6a27a02dd82abb31cc1b01bd
+- name: github.com/gorilla/mux
+  version: cf79e51a62d8219d52060dfc1b4e810414ba2d15
+- name: github.com/hashicorp/errwrap
+  version: 7554cd9344cec97297fa6649b055a8c98c2a1e55
+- name: github.com/hashicorp/go-multierror
+  version: ed905158d87462226a13fe39ddf685ea65f1c11f
+- name: github.com/kelseyhightower/envconfig
+  version: 9aca109c9aec4633fced9717c4a09ecab3d33111
+- name: github.com/mitchellh/mapstructure
+  version: d2dd0262208475919e1a362f675cfc0e7c10e905
+- name: github.com/peterhellberg/link
+  version: d1cebc7ea14a5fc0de7cb4a45acae773161642c6
+- name: github.com/pivotal-cf/brokerapi
+  version: 3dcb3e88faf1f81359679aa1b931df45d30f01de
+  subpackages:
+  - auth
+- name: github.com/tedsuo/rata
+  version: 0649c23705dfb45a9693b668c4fc1c0666f485d9
+- name: github.com/vito/go-sse
+  version: fd69d275caac5d78d793e77ddbe9bd2001d9b88d
+  subpackages:
+  - sse
+- name: gopkg.in/yaml.v2
+  version: e4d366fc3c7938e2958e662b4258c7a89e1f0e3e
+testImports: []

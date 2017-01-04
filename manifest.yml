@@ -1,0 +1,7 @@
+---
+buildpack: go_buildpack
+applications:
+- name: "concourse-broker"
+  command: concourse-broker
+  env:
+    GO_INSTALL_PACKAGE_SPEC: "github.com/18F/concourse-broker/cmd/concourse-broker"

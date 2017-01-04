@@ -1,0 +1,10 @@
+package: github.com/18F/concourse-broker
+import:
+- package: github.com/pivotal-cf/brokerapi
+- package: code.cloudfoundry.org/lager
+- package: github.com/concourse/go-concourse
+  subpackages:
+  - concourse
+- package: github.com/concourse/atc
+- package: github.com/kelseyhightower/envconfig
+  version: v1.2.0

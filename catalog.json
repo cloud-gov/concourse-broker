@@ -1,0 +1,22 @@
+{
+  "id": "64aca71f-f2e9-4f3d-8e0e-9a3e1e5e3bb6",
+  "name": "concourse-ci",
+  "description": "Concourse CI team",
+  "bindable": false,
+  "metadata": {
+    "displayName": "Concourse CI Team",
+    "documentationUrl": ""
+  },
+  "plan_updateable": true,
+  "plans": [
+    {
+      "id": "334744a3-f12f-4004-a94e-d7132a0d0706",
+      "name": "concourse-ci",
+      "description": "Concourse CI Team",
+      "free": true,
+      "metadata": {
+        "displayName": "Concourse CI Team"
+      }
+    }
+  ]
+}
