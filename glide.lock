@@ -1,10 +1,12 @@
-hash: d2e924f84d5e0a236fbb79be27e84896fc2beb3e8e5447285a97c1695cbf8149
-updated: 2017-01-04T12:07:19.745466297-05:00
+hash: c715a93682d6b94eb3a7140d48ad0b7c2fe7eddeb33468c3a945deae32486193
+updated: 2017-01-04T13:42:10.078433713-05:00
 imports:
 - name: code.cloudfoundry.org/lager
   version: 62951a8009ab331bb21dc418074fa54e66eb9b6a
 - name: github.com/bmizerany/pat
   version: c068ca2f0aacee5ac3681d68e4d0a003b7d1fd2c
+- name: github.com/cloudfoundry-community/go-cfclient
+  version: 7b15efc43291ece6f107ed34f9684ff5f6454de3
 - name: github.com/concourse/atc
   version: 6085c91ef07ca0596bdf791a2801aaa84e467d8c
   subpackages:

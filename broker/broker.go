@@ -27,9 +27,17 @@ func (c *concourseBroker) Services(context context.Context) []brokerapi.Service 
 
 func (c *concourseBroker) Provision(context context.Context, instanceID string,
 	details brokerapi.ProvisionDetails, asyncAllowed bool) (brokerapi.ProvisionedServiceSpec, error) {
-	cfDetails := cf.Details{OrgName:"testorg", SpaceGUID:details.SpaceGUID}
+	cfClient, err := cf.NewClient(c.env)
+	if err != nil {
+		return brokerapi.ProvisionedServiceSpec{}, err
+	}
+	cfDetails, err := cfClient.GetProvisionDetails(details.SpaceGUID)
+	cfDetails.SpaceGUID = details.SpaceGUID
+	if err != nil {
+		return brokerapi.ProvisionedServiceSpec{}, err
+	}
 	concourseClient := concourse.NewClient(c.env)
-	err := concourseClient.CreateTeam(cfDetails, c.env)
+	err = concourseClient.CreateTeam(cfDetails, c.env)
 	if err != nil {
 		return brokerapi.ProvisionedServiceSpec{}, err
 	}
@@ -38,6 +46,19 @@ func (c *concourseBroker) Provision(context context.Context, instanceID string,
 
 func (c *concourseBroker) Deprovision(context context.Context, instanceID string,
 	details brokerapi.DeprovisionDetails, asyncAllowed bool) (brokerapi.DeprovisionServiceSpec, error) {
+	cfClient, err := cf.NewClient(c.env)
+	if err != nil {
+		return brokerapi.DeprovisionServiceSpec{}, err
+	}
+	cfDetails, err := cfClient.GetDeprovisionDetails(instanceID)
+	if err != nil {
+		return brokerapi.DeprovisionServiceSpec{}, err
+	}
+	concourseClient := concourse.NewClient(c.env)
+	err = concourseClient.DeleteTeam(cfDetails, c.env)
+	if err != nil {
+		return brokerapi.DeprovisionServiceSpec{}, err
+	}
 	return brokerapi.DeprovisionServiceSpec{}, nil
 }
 

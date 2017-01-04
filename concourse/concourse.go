@@ -129,8 +129,14 @@ func (c *concourseClient) CreateTeam(details cf.Details, env config.Env) error {
 }
 
 func (c *concourseClient) DeleteTeam(details cf.Details, env config.Env) error {
-	err := c.client.Team(adminTeam).DestroyTeam(fmt.Sprintf("%s-%s", details.OrgName, details.SpaceName))
+	client, err := c.getAuthClient(env.ConcourseURL)
 	if err != nil {
+		log.Println("can't get auth client")
+		return err
+	}
+	err = client.Team(details.OrgName).DestroyTeam(details.OrgName)
+	if err != nil {
+		log.Println("couldn't destroy team.")
 		return err
 	}
 	return nil
