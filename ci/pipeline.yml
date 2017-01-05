@@ -144,7 +144,7 @@ jobs:
     passed: [push-concourse-broker-production]
     trigger: true
   - task: acceptance-tests-production
-    file: broker-src/acceptance-tests.yml
+    file: broker-src/ci/acceptance-tests.yml
     params:
       CF_API_URL: {{cf-api-url-production}}
       CF_USERNAME: {{cf-deploy-username-production}}
