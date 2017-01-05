@@ -4,10 +4,10 @@ import (
 	"code.cloudfoundry.org/lager"
 	"context"
 	"errors"
-	"github.com/pivotal-cf/brokerapi"
-	"github.com/18F/concourse-broker/config"
-	"github.com/18F/concourse-broker/concourse"
 	"github.com/18F/concourse-broker/cf"
+	"github.com/18F/concourse-broker/concourse"
+	"github.com/18F/concourse-broker/config"
+	"github.com/pivotal-cf/brokerapi"
 )
 
 // New returns a new concourse service broker instance.
@@ -18,7 +18,7 @@ func New(services []brokerapi.Service, logger lager.Logger, env config.Env) brok
 type concourseBroker struct {
 	services []brokerapi.Service
 	logger   lager.Logger
-	env config.Env
+	env      config.Env
 }
 
 func (c *concourseBroker) Services(context context.Context) []brokerapi.Service {

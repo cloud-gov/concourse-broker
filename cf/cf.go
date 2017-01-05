@@ -1,11 +1,11 @@
 package cf
 
 import (
+	"encoding/json"
+	"fmt"
 	"github.com/18F/concourse-broker/config"
 	"github.com/cloudfoundry-community/go-cfclient"
-	"fmt"
 	"io/ioutil"
-	"encoding/json"
 	"log"
 )
 
@@ -23,9 +23,9 @@ type Client interface {
 
 func NewClient(env config.Env) (Client, error) {
 	config := &cfclient.Config{
-		ClientID: env.ClientID,
+		ClientID:     env.ClientID,
 		ClientSecret: env.ClientSecret,
-		ApiAddress: env.CFURL,
+		ApiAddress:   env.CFURL,
 	}
 	log.Printf("API ADDRESS %s", config.ApiAddress)
 	client, err := cfclient.NewClient(config)
@@ -37,7 +37,7 @@ func NewClient(env config.Env) (Client, error) {
 	return &cfClient{client: client}, nil
 }
 
-type cfClient struct{
+type cfClient struct {
 	client *cfclient.Client
 }
 

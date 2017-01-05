@@ -5,9 +5,9 @@ import "github.com/kelseyhightower/envconfig"
 type Env struct {
 	BrokerUsername string `envconfig:"broker_username" required:"true"`
 	BrokerPassword string `envconfig:"broker_password" required:"true"`
-	AdminUsername string `envconfig:"admin_username" required:"true"`
-	AdminPassword string `envconfig:"admin_password" required:"true"`
-	ConcourseURL string `envconfig:"concourse_url" required:"true"`
+	AdminUsername  string `envconfig:"admin_username" required:"true"`
+	AdminPassword  string `envconfig:"admin_password" required:"true"`
+	ConcourseURL   string `envconfig:"concourse_url" required:"true"`
 	CFURL          string `envconfig:"cf_url" required:"true"`
 	TokenURL       string `envconfig:"token_url" required:"true"`
 	AuthURL        string `envconfig:"auth_url" required:"true"`
