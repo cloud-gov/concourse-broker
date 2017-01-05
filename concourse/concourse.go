@@ -7,57 +7,24 @@ import (
 	"github.com/18F/concourse-broker/config"
 	"github.com/concourse/atc"
 	"github.com/concourse/go-concourse/concourse"
-	"golang.org/x/oauth2"
 	"log"
-	"net"
-	"net/http"
-	"time"
 )
 
 const adminTeam = "main"
 
 type Client interface {
-	CreateTeam(details cf.Details, env config.Env) error
-	DeleteTeam(details cf.Details, env config.Env) error
-}
-
-type basicAuthTransport struct {
-	username string
-	password string
-
-	base http.RoundTripper
-}
-
-// https://github.com/concourse/fly/blob/6fb036ef31f6e6f3e74f0089f2d59d2722f0580c/rc/target.go#L378
-func (t basicAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r.SetBasicAuth(t.username, t.password)
-	return t.base.RoundTrip(r)
-}
-
-func transport() http.RoundTripper {
-	var transport http.RoundTripper
-	transport = &http.Transport{
-		Dial: (&net.Dialer{
-			Timeout: 10 * time.Second,
-		}).Dial,
-	}
-
-	return transport
+	CreateTeam(details cf.Details) error
+	DeleteTeam(details cf.Details) error
 }
 
 func NewClient(env config.Env) Client {
-	httpClient := &http.Client{
-		Transport: basicAuthTransport{
-			username: env.AdminUsername,
-			password: env.AdminPassword,
-			base:     transport(),
-		},
-	}
+	httpClient := newBasicAuthClient(env.AdminUsername, env.AdminPassword)
 	return &concourseClient{client: concourse.NewClient(env.ConcourseURL, httpClient)}
 }
 
 type concourseClient struct {
 	client concourse.Client
+	env    config.Env
 }
 
 func (c *concourseClient) getAuthClient(concourseURL string) (concourse.Client, error) {
@@ -66,38 +33,25 @@ func (c *concourseClient) getAuthClient(concourseURL string) (concourse.Client, 
 	if err != nil {
 		return nil, err
 	}
-	var oAuthToken *oauth2.Token
-	oAuthToken = &oauth2.Token{
-		TokenType:   token.Type,
-		AccessToken: token.Value,
-	}
-
-	transport := transport()
-
-	transport = &oauth2.Transport{
-		Source: oauth2.StaticTokenSource(oAuthToken),
-		Base:   transport,
-	}
-
-	httpClient := &http.Client{Transport: transport}
+	httpClient := newOAuthClient(token.Type, token.Value)
 	return concourse.NewClient(concourseURL, httpClient), nil
 }
 
-func (c *concourseClient) CreateTeam(details cf.Details, env config.Env) error {
+func (c *concourseClient) CreateTeam(details cf.Details) error {
 	fmt.Println("made it")
 	teamName := details.OrgName
 	team := atc.Team{
 		UAAAuth: &atc.UAAAuth{
-			ClientID:     env.ClientID,
-			ClientSecret: env.ClientSecret,
-			AuthURL:      env.AuthURL,
-			TokenURL:     env.TokenURL,
+			ClientID:     c.env.ClientID,
+			ClientSecret: c.env.ClientSecret,
+			AuthURL:      c.env.AuthURL,
+			TokenURL:     c.env.TokenURL,
 			CFSpaces:     []string{details.SpaceGUID},
 			CFCACert:     "",
-			CFURL:        env.CFURL,
+			CFURL:        c.env.CFURL,
 		},
 	}
-	client, err := c.getAuthClient(env.ConcourseURL)
+	client, err := c.getAuthClient(c.env.ConcourseURL)
 	if err != nil {
 		log.Println("can't get auth client")
 		return err
@@ -113,8 +67,8 @@ func (c *concourseClient) CreateTeam(details cf.Details, env config.Env) error {
 	return nil
 }
 
-func (c *concourseClient) DeleteTeam(details cf.Details, env config.Env) error {
-	client, err := c.getAuthClient(env.ConcourseURL)
+func (c *concourseClient) DeleteTeam(details cf.Details) error {
+	client, err := c.getAuthClient(c.env.ConcourseURL)
 	if err != nil {
 		log.Println("can't get auth client")
 		return err
