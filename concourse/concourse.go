@@ -19,7 +19,7 @@ type Client interface {
 
 func NewClient(env config.Env) Client {
 	httpClient := newBasicAuthClient(env.AdminUsername, env.AdminPassword)
-	return &concourseClient{client: concourse.NewClient(env.ConcourseURL, httpClient)}
+	return &concourseClient{client: concourse.NewClient(env.ConcourseURL, httpClient), env: env}
 }
 
 type concourseClient struct {
@@ -38,7 +38,6 @@ func (c *concourseClient) getAuthClient(concourseURL string) (concourse.Client, 
 }
 
 func (c *concourseClient) CreateTeam(details cf.Details) error {
-	fmt.Println("made it")
 	teamName := details.OrgName
 	team := atc.Team{
 		UAAAuth: &atc.UAAAuth{
@@ -55,6 +54,10 @@ func (c *concourseClient) CreateTeam(details cf.Details) error {
 	if err != nil {
 		log.Println("can't get auth client")
 		return err
+	}
+	authMethods, err := client.Team(teamName).ListAuthMethods()
+	if err == nil || len(authMethods) > 0 {
+		return fmt.Errorf("Team %s already exists", teamName)
 	}
 	_, created, updated, err := client.Team(teamName).CreateOrUpdate(team)
 	if err != nil {
