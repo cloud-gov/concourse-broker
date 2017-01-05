@@ -1,0 +1,16 @@
+language: go
+
+go:
+- "1.7"
+- tip
+
+# Dependencies live in /vendor/
+install: true
+
+# Only build for the master branch. Otherwise, do builds based on PRs.
+branches:
+  only:
+  - master
+
+# Skip vendor tests
+script: go test -v $(go list ./... | grep -v /vendor/)

@@ -1,5 +1,9 @@
 # Concourse Broker
 
+[![Code Climate](https://codeclimate.com/github/18F/concourse-broker/badges/gpa.svg)](https://codeclimate.com/github/18F/concourse-broker)
+
+[![Build Status](https://travis-ci.org/18F/concourse-broker.svg?branch=master)](https://travis-ci.org/18F/concourse-broker)
+
 This is an **experimental** Cloud Foundry Service Broker for
 provisioning teams on a deployed [Concourse CI](https://concourse.ci/)
 instance.
