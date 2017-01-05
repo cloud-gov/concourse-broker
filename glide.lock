@@ -1,5 +1,5 @@
-hash: c715a93682d6b94eb3a7140d48ad0b7c2fe7eddeb33468c3a945deae32486193
-updated: 2017-01-04T13:42:10.078433713-05:00
+hash: c8b54252912431f5734ac06c8b055637fb0a86128b09da79ff51f16b364e0e1d
+updated: 2017-01-05T15:18:10.057303139-05:00
 imports:
 - name: code.cloudfoundry.org/lager
   version: 62951a8009ab331bb21dc418074fa54e66eb9b6a
@@ -33,6 +33,10 @@ imports:
   version: 9aca109c9aec4633fced9717c4a09ecab3d33111
 - name: github.com/mitchellh/mapstructure
   version: d2dd0262208475919e1a362f675cfc0e7c10e905
+- name: github.com/onsi/ginkgo
+  version: 5437a97bf824dec14e58d68c56ee36e772670c2e
+- name: github.com/onsi/gomega
+  version: c73e51675ad2455a4515b6213eb7145eaade4824
 - name: github.com/peterhellberg/link
   version: d1cebc7ea14a5fc0de7cb4a45acae773161642c6
 - name: github.com/pivotal-cf/brokerapi
@@ -46,12 +50,13 @@ imports:
   subpackages:
   - sse
 - name: golang.org/x/net
-  version: 3b993948b6f0e651ffb58ba135d8538a68b1cddf
+  version: 7dbad50ab5b31073856416cdcfeb2796d682f844
   subpackages:
   - context
 - name: golang.org/x/oauth2
-  version: e86e2718db89775a4604abc10a5d3a5672e7336e
+  version: 2baa8a1b9338cf13d9eeb27696d761155fa480be
   subpackages:
+  - clientcredentials
   - internal
 - name: google.golang.org/appengine
   version: e234e71924d4aa52444bc76f2f831f13fa1eca60

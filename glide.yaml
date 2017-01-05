@@ -13,3 +13,5 @@ import:
   subpackages:
   - context
 - package: github.com/cloudfoundry-community/go-cfclient
+- package: github.com/onsi/ginkgo
+- package: github.com/onsi/gomega
