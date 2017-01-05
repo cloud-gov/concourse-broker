@@ -79,6 +79,7 @@ jobs:
       CF_SPACE: {{cf-space-staging}}
       PLAN_NAME: concourse-ci
       SERVICE_INSTANCE_NAME: concourse-ci-acceptance
+      CONCOURSE_URL: {{concourse-url-staging}}
 
 - name: push-concourse-broker-production
   serial_groups: [production]
@@ -153,6 +154,7 @@ jobs:
       CF_SPACE: {{cf-space-production}}
       PLAN_NAME: concourse-ci
       SERVICE_INSTANCE_NAME: concourse-ci-acceptance
+      CONCOURSE_URL: {{concourse-url-production}}
 
 resources:
 - name: broker-src
