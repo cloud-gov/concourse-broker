@@ -11,7 +11,7 @@ instance.
 
 ## Setup
 
-#### Step One: Create a client in UAA for this app
+#### Create a client in UAA for this app
 
 This application uses oauth to perform actions on your behalf in UAA.  To add a new oauth client in UAA, run the following command:
 
@@ -25,7 +25,7 @@ This application uses oauth to perform actions on your behalf in UAA.  To add a 
 
 The easiest/recommended way to deploy the broker is via the [Concourse](http://concourse.ci/) pipeline.
 
-1. Create a `ci/credentials.yml` file, and fill in the templated values from [the pipeline](ci/pipeline.yml).
+1. Create a `ci/credentials.yml` file from the `ci/credentials.example.yml` (i.e. `cp ci/credentials.example.yml ci/credentials.yml`), and fill in the templated values from [the pipeline](ci/pipeline.yml).
 1. Deploy the pipeline.
 
     ```bash
@@ -41,7 +41,7 @@ The easiest/recommended way to deploy the broker is via the [Concourse](http://c
     $ cf target -o <org> -s <space>
     ```
 
-1. Set the `environment_variables` listed in [the 'broker-deploy-production' step of the 'push-concourse-broker-production' job](ci/pipeline.yml).
+1. The configuration is entirely read from environment variables. Edit the manifest.yml files and update your settings as necessary.
 1. Deploy the broker as an application.
 
     ```bash
