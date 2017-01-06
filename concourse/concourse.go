@@ -12,11 +12,13 @@ import (
 
 const adminTeam = "main"
 
+// Client defines the capabilities that any concourse client should be able to do.
 type Client interface {
 	CreateTeam(details cf.Details) error
 	DeleteTeam(details cf.Details) error
 }
 
+// NewClient returns a client that can be used to interface with a deployed Concourse CI instance.
 func NewClient(env config.Env, logger lager.Logger) Client {
 	httpClient := newBasicAuthClient(env.AdminUsername, env.AdminPassword)
 
