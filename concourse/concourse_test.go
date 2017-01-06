@@ -1,8 +1,7 @@
-package concourse_test
+package concourse
 
 import (
 	"github.com/18F/concourse-broker/cf"
-	"github.com/18F/concourse-broker/concourse"
 	"github.com/18F/concourse-broker/config"
 	"github.com/concourse/atc"
 	. "github.com/onsi/ginkgo"
@@ -19,9 +18,9 @@ var _ = Describe("Concourse", func() {
 					AdminUsername: "user",
 					AdminPassword: "password",
 				}
-				client := concourse.NewClient(env)
-				_ = client
-				//Expect(client).Should(BeAssignableToTypeOf(concourseClient{}))
+				client := NewClient(env)
+				expectedClient := new(concourseClient)
+				Expect(client).Should(BeAssignableToTypeOf((expectedClient)))
 			})
 		})
 	})
@@ -70,7 +69,7 @@ var _ = Describe("Concourse", func() {
 				)
 			})
 			It("returns no error", func() {
-				client := concourse.NewClient(env)
+				client := NewClient(env)
 				err := client.CreateTeam(cf.Details{OrgName: "team venture"})
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -91,7 +90,7 @@ var _ = Describe("Concourse", func() {
 				)
 			})
 			It("should fail and indicate it could not provision", func() {
-				client := concourse.NewClient(env)
+				client := NewClient(env)
 				err := client.CreateTeam(cf.Details{OrgName: "team venture"})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("Team team venture already exists"))
@@ -121,7 +120,7 @@ var _ = Describe("Concourse", func() {
 				)
 			})
 			It("returns an error", func() {
-				client := concourse.NewClient(env)
+				client := NewClient(env)
 				err := client.CreateTeam(cf.Details{OrgName: "team venture"})
 				Expect(err).To(HaveOccurred())
 			})
@@ -151,7 +150,7 @@ var _ = Describe("Concourse", func() {
 				)
 			})
 			It("returns no error", func() {
-				client := concourse.NewClient(env)
+				client := NewClient(env)
 				err := client.DeleteTeam(cf.Details{OrgName: "team venture"})
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -172,7 +171,7 @@ var _ = Describe("Concourse", func() {
 				)
 			})
 			It("returns an error stating 'couldn't destroy team'", func() {
-				client := concourse.NewClient(env)
+				client := NewClient(env)
 				err := client.DeleteTeam(cf.Details{OrgName: "team venture"})
 				Expect(err).To(HaveOccurred())
 			})
