@@ -6,7 +6,6 @@ import (
 	"github.com/18F/concourse-broker/config"
 	"github.com/cloudfoundry-community/go-cfclient"
 	"io/ioutil"
-	"log"
 )
 
 type Details struct {
@@ -27,13 +26,10 @@ func NewClient(env config.Env) (Client, error) {
 		ClientSecret: env.ClientSecret,
 		ApiAddress:   env.CFURL,
 	}
-	log.Printf("API ADDRESS %s", config.ApiAddress)
 	client, err := cfclient.NewClient(config)
 	if err != nil {
 		return nil, err
 	}
-	services, err := client.ListServices()
-	log.Printf("NUMBER OF SERVICES %d", len(services))
 	return &cfClient{client: client}, nil
 }
 
@@ -55,8 +51,6 @@ func (c *cfClient) GetDeprovisionDetails(serviceGUID string) (Details, error) {
 	if err != nil {
 		return Details{}, err
 	}
-	services, err := c.client.ListServices()
-	log.Printf("NUMBER OF SERVICES ALSO %d", len(services))
 	orgName, err := c.getOrgName(serviceInstance.SpaceUrl)
 	if err != nil {
 		return Details{}, err
