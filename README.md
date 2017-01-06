@@ -8,6 +8,8 @@ This is an **experimental** Cloud Foundry Service Broker for
 provisioning teams on a deployed [Concourse CI](https://concourse.ci/)
 instance.
 
+It requires a deployed Concourse CI instance in which the [`main` team](https://concourse.ci/teams.html#main-team) is authenticated via Basic Auth.
+
 
 ## Setup
 
