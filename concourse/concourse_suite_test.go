@@ -4,10 +4,9 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
+	"code.cloudfoundry.org/lager/lagertest"
 	"github.com/18F/concourse-broker/config"
-	"github.com/concourse/go-concourse/concourse"
 	"github.com/onsi/gomega/ghttp"
-	"net/http"
 	"testing"
 )
 
@@ -18,26 +17,20 @@ func TestConcourse(t *testing.T) {
 
 var (
 	atcServer *ghttp.Server
-	client    concourse.Client
-	team      concourse.Team
 	env       config.Env
+	logger    *lagertest.TestLogger
 )
 
 var _ = BeforeEach(func() {
 	atcServer = ghttp.NewServer()
-
-	client = concourse.NewClient(
-		atcServer.URL(),
-		&http.Client{},
-	)
-
-	team = client.Team("some-team")
 
 	env = config.Env{
 		AdminUsername: "user",
 		AdminPassword: "password",
 		ConcourseURL:  atcServer.URL(),
 	}
+
+	logger = lagertest.NewTestLogger("concourse-broker")
 })
 
 var _ = AfterEach(func() {

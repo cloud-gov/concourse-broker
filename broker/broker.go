@@ -36,7 +36,7 @@ func (c *concourseBroker) Provision(context context.Context, instanceID string,
 	if err != nil {
 		return brokerapi.ProvisionedServiceSpec{}, err
 	}
-	concourseClient := concourse.NewClient(c.env)
+	concourseClient := concourse.NewClient(c.env, c.logger)
 	err = concourseClient.CreateTeam(cfDetails)
 	if err != nil {
 		return brokerapi.ProvisionedServiceSpec{}, err
@@ -54,7 +54,7 @@ func (c *concourseBroker) Deprovision(context context.Context, instanceID string
 	if err != nil {
 		return brokerapi.DeprovisionServiceSpec{}, err
 	}
-	concourseClient := concourse.NewClient(c.env)
+	concourseClient := concourse.NewClient(c.env, c.logger)
 	err = concourseClient.DeleteTeam(cfDetails)
 	if err != nil {
 		return brokerapi.DeprovisionServiceSpec{}, err
