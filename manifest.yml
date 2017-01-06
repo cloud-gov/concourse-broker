@@ -5,3 +5,13 @@ applications:
   command: concourse-broker
   env:
     GO_INSTALL_PACKAGE_SPEC: "github.com/18F/concourse-broker/cmd/concourse-broker"
+  # BROKER_USERNAME:
+  # BROKER_PASSWORD:
+  # ADMIN_USERNAME:
+  # ADMIN_PASSWORD:
+  # CONCOURSE_URL:
+  # CF_URL:
+  # AUTH_URL:
+  # TOKEN_URL:
+  # CLIENT_ID:
+  # CLIENT_SECRET:
