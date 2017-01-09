@@ -12,6 +12,8 @@ It requires a deployed Concourse CI instance in which the [`main` team](https://
 
 **IMPORTANT**: You must trust the users of your CloudFoundry installation implicitly before enabling in your environment. See: http://concourse.ci/teams.html#section_teams-caveats
 
+## Demo
+![demo gif](demo.gif)
 
 ## Setup
 
