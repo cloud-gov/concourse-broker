@@ -13,7 +13,7 @@ space_guid=$(cf space "${CF_SPACE}" --guid)
 
 # Try to find team before creation and should find nothing
 
-RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name | contains (\"${CF_ORGANIZATION}\"))")
+RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name == \"${CF_ORGANIZATION}\")")
 if [ ! -z "$RESULT" ]; then
     echo "Found concourse team before creation. Failing for now."
     exit 1
@@ -26,7 +26,7 @@ instance_guid=$(cf service "${SERVICE_INSTANCE_NAME}" --guid)
 
 # Try to find team after service creation and should find the list.
 
-RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name | contains (\"${CF_ORGANIZATION}\"))")
+RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name == \"${CF_ORGANIZATION}\")")
 if [ -z "$RESULT" ]; then
     echo "Could not find concourse team after service creation. Failing..."
     exit 1
@@ -36,7 +36,7 @@ fi
 cf delete-service -f "${SERVICE_INSTANCE_NAME}"
 
 
-RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name | contains (\"${CF_ORGANIZATION}\"))")
+RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name == \"${CF_ORGANIZATION}\")")
 if [ ! -z "$RESULT" ]; then
     echo "Found concourse team after deletion. Failing..."
     exit 1
