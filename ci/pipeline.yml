@@ -118,6 +118,7 @@ jobs:
       AUTH_USER: {{broker-username-production}}
       AUTH_PASS: {{broker-password-production}}
       SERVICES: concourse-ci
+      SERVICE_ORGANIZATION: {{broker-orgs-production}}
   on_failure:
     put: slack
     params:
