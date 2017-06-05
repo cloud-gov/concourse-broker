@@ -29,7 +29,7 @@ jobs:
         CF_URL: {{cf-api-url-staging}}
         AUTH_URL: {{auth-url-staging}}
         TOKEN_URL: {{token-url-staging}}
-        CLIENT_ID: {{client-id-staging}}
+        CLIENT_ID: concourse-broker
         CLIENT_SECRET: {{client-secret-staging}}
   - task: update-broker
     file: pipeline-tasks/register-service-broker.yml
@@ -104,7 +104,7 @@ jobs:
         CF_URL: {{cf-api-url-production}}
         AUTH_URL: {{auth-url-production}}
         TOKEN_URL: {{token-url-production}}
-        CLIENT_ID: {{client-id-production}}
+        CLIENT_ID: concourse-broker
         CLIENT_SECRET: {{client-secret-production}}
   - task: update-broker
     file: pipeline-tasks/register-service-broker.yml
