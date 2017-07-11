@@ -7,8 +7,6 @@ cf login -a $CF_API_URL -u $CF_USERNAME -p $CF_PASSWORD -o $CF_ORGANIZATION -s $
 
 set -x
 
-space_guid=$(cf space "${CF_SPACE}" --guid)
-
 # Test concourse ci plan
 
 # Try to find team before creation and should find nothing
@@ -21,8 +19,6 @@ fi
 
 # Create service instance
 cf create-service concourse-ci "${PLAN_NAME}" "${SERVICE_INSTANCE_NAME}"
-instance_guid=$(cf service "${SERVICE_INSTANCE_NAME}" --guid)
-
 
 # Try to find team after service creation and should find the list.
 
@@ -34,7 +30,6 @@ fi
 
 # Delete service instance
 cf delete-service -f "${SERVICE_INSTANCE_NAME}"
-
 
 RESULT=$(curl -L "${CONCOURSE_URL}/api/v1/teams" -s | jq -c ".[] | select(.name == \"${CF_ORGANIZATION}\")")
 if [ ! -z "$RESULT" ]; then
