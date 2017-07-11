@@ -149,6 +149,11 @@ func (c *concourseClient) UpdateTeams() error {
 				return
 			}
 
+			if auth.ClientID == c.env.ClientID && auth.ClientSecret == c.env.ClientSecret {
+				errc <- nil
+				return
+			}
+
 			auth.ClientID = c.env.ClientID
 			auth.ClientSecret = c.env.ClientSecret
 

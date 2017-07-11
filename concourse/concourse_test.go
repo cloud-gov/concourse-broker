@@ -41,27 +41,27 @@ var _ = Describe("Concourse", func() {
 			env.ClientID = "new-id"
 			env.ClientSecret = "new-secret"
 
-			originalAuth := uaa.UAAAuthConfig{
+			outdatedAuth := uaa.UAAAuthConfig{
 				ClientID:     "original-id",
 				ClientSecret: "original-secret",
 				CFSpaces:     []string{""},
 			}
-			originalAuthData, err := json.Marshal(originalAuth)
+			outdatedAuthData, err := json.Marshal(outdatedAuth)
 			Expect(err).NotTo(HaveOccurred())
 
-			newAuth := uaa.UAAAuthConfig{
+			currentAuth := uaa.UAAAuthConfig{
 				ClientID:     "new-id",
 				ClientSecret: "new-secret",
 				CFSpaces:     []string{""},
 			}
-			newAuthData, err := json.Marshal(newAuth)
+			currentAuthData, err := json.Marshal(currentAuth)
 			Expect(err).NotTo(HaveOccurred())
 
 			desiredTeam = atc.Team{
 				ID:   1,
 				Name: "team venture",
 				Auth: map[string]*json.RawMessage{
-					uaa.ProviderName: (*json.RawMessage)(&newAuthData),
+					uaa.ProviderName: (*json.RawMessage)(&currentAuthData),
 				},
 			}
 			expectedTeams = []atc.Team{
@@ -69,7 +69,14 @@ var _ = Describe("Concourse", func() {
 					ID:   1,
 					Name: "team venture",
 					Auth: map[string]*json.RawMessage{
-						uaa.ProviderName: (*json.RawMessage)(&originalAuthData),
+						uaa.ProviderName: (*json.RawMessage)(&outdatedAuthData),
+					},
+				},
+				{
+					ID:   2,
+					Name: "team rocket",
+					Auth: map[string]*json.RawMessage{
+						uaa.ProviderName: (*json.RawMessage)(&currentAuthData),
 					},
 				},
 			}
@@ -104,6 +111,7 @@ var _ = Describe("Concourse", func() {
 				client := NewClient(env, logger)
 				err := client.UpdateTeams()
 				Expect(err).NotTo(HaveOccurred())
+				Expect(atcServer.ReceivedRequests()).To(HaveLen(3))
 			})
 		})
 	})
