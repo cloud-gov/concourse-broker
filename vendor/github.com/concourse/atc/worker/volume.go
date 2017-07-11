@@ -1,98 +1,36 @@
 package worker
 
 import (
-	"sync"
-	"time"
+	"io"
 
-	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager"
-	"github.com/concourse/atc/metric"
+
+	"github.com/concourse/atc/db"
 	"github.com/concourse/baggageclaim"
 )
-
-const volumeKeepalive = 30 * time.Second
-
-//go:generate counterfeiter . VolumeFactoryDB
-
-type VolumeFactoryDB interface {
-	GetVolumeTTL(volumeHandle string) (time.Duration, bool, error)
-	ReapVolume(handle string) error
-	SetVolumeTTLAndSizeInBytes(handle string, ttl time.Duration, sizeInBytes int64) error
-	SetVolumeTTL(handle string, ttl time.Duration) error
-}
-
-//go:generate counterfeiter . VolumeFactory
-
-type VolumeFactory interface {
-	Build(lager.Logger, baggageclaim.Volume) (Volume, bool, error)
-}
-
-type volumeFactory struct {
-	db    VolumeFactoryDB
-	clock clock.Clock
-}
-
-func NewVolumeFactory(db VolumeFactoryDB, clock clock.Clock) VolumeFactory {
-	return &volumeFactory{
-		db:    db,
-		clock: clock,
-	}
-}
-
-func (vf *volumeFactory) Build(logger lager.Logger, bcVol baggageclaim.Volume) (Volume, bool, error) {
-	bcVol.Release(nil)
-
-	logger = logger.WithData(lager.Data{"volume": bcVol.Handle()})
-
-	vol := &volume{
-		Volume: bcVol,
-		db:     vf.db,
-
-		heartbeating: new(sync.WaitGroup),
-		release:      make(chan *time.Duration, 1),
-	}
-
-	ttl, found, err := vf.db.GetVolumeTTL(vol.Handle())
-	if err != nil {
-		logger.Error("failed-to-lookup-expiration-of-volume", err)
-		return nil, false, err
-	}
-
-	if !found {
-		return nil, false, nil
-	}
-
-	vol.heartbeat(logger.Session("initial-heartbeat"), ttl)
-
-	vol.heartbeating.Add(1)
-	go vol.heartbeatContinuously(
-		logger.Session("continuous-heartbeat"),
-		vf.clock.NewTicker(volumeKeepalive),
-		ttl,
-	)
-
-	metric.TrackedVolumes.Inc()
-
-	return vol, true, nil
-}
 
 //go:generate counterfeiter . Volume
 
 type Volume interface {
-	baggageclaim.Volume
+	Handle() string
+	Path() string
 
-	// a noop method to ensure things aren't just returning baggageclaim.Volume
-	HeartbeatingToDB()
-}
+	SetProperty(key string, value string) error
+	Properties() (baggageclaim.VolumeProperties, error)
 
-type volume struct {
-	baggageclaim.Volume
+	SetPrivileged(bool) error
 
-	db VolumeFactoryDB
+	StreamIn(path string, tarStream io.Reader) error
+	StreamOut(path string) (io.ReadCloser, error)
 
-	release      chan *time.Duration
-	heartbeating *sync.WaitGroup
-	releaseOnce  sync.Once
+	COWStrategy() baggageclaim.COWStrategy
+
+	InitializeResourceCache(*db.UsedResourceCache) error
+	InitializeTaskCache(lager.Logger, int, string, string, bool) error
+
+	CreateChildForContainer(db.CreatingContainer, string) (db.CreatingVolume, error)
+
+	Destroy() error
 }
 
 type VolumeMount struct {
@@ -100,81 +38,95 @@ type VolumeMount struct {
 	MountPath string
 }
 
-func (*volume) HeartbeatingToDB() {}
-
-func (v *volume) Release(finalTTL *time.Duration) {
-	v.releaseOnce.Do(func() {
-		v.release <- finalTTL
-		v.heartbeating.Wait()
-		metric.TrackedVolumes.Dec()
-	})
+type volume struct {
+	bcVolume     baggageclaim.Volume
+	dbVolume     db.CreatedVolume
+	volumeClient VolumeClient
 }
 
-func (v *volume) heartbeatContinuously(logger lager.Logger, pacemaker clock.Ticker, initialTTL time.Duration) {
-	defer v.heartbeating.Done()
-	defer pacemaker.Stop()
-
-	logger.Debug("start")
-	defer logger.Debug("done")
-
-	ttlToSet := initialTTL
-
-	for {
-		select {
-		case <-pacemaker.C():
-			ttl, found, err := v.db.GetVolumeTTL(v.Handle())
-			if err != nil {
-				logger.Error("failed-to-lookup-volume-ttl", err)
-			} else {
-				if !found {
-					logger.Info("volume-expired-from-database")
-					return
-				}
-
-				ttlToSet = ttl
-			}
-
-			v.heartbeat(logger.Session("tick"), ttlToSet)
-
-		case finalTTL := <-v.release:
-			if finalTTL != nil {
-				v.heartbeat(logger.Session("final"), *finalTTL)
-			}
-
-			return
-		}
+func NewVolume(
+	bcVolume baggageclaim.Volume,
+	dbVolume db.CreatedVolume,
+	volumeClient VolumeClient,
+) Volume {
+	return &volume{
+		bcVolume:     bcVolume,
+		dbVolume:     dbVolume,
+		volumeClient: volumeClient,
 	}
 }
 
-func (v *volume) heartbeat(logger lager.Logger, ttl time.Duration) {
-	logger.Debug("start")
-	defer logger.Debug("done")
+func (v *volume) Handle() string { return v.bcVolume.Handle() }
 
-	err := v.SetTTL(ttl)
-	if err != nil {
-		if err == baggageclaim.ErrVolumeNotFound {
-			err = v.db.ReapVolume(v.Handle())
-			if err != nil {
-				logger.Error("failed-to-delete-volume-from-database", err)
-			}
-		}
-		logger.Error("failed-to-heartbeat-to-volume", err)
+func (v *volume) Path() string { return v.bcVolume.Path() }
+
+func (v *volume) SetProperty(key string, value string) error {
+	return v.bcVolume.SetProperty(key, value)
+}
+
+func (v *volume) SetPrivileged(privileged bool) error {
+	return v.bcVolume.SetPrivileged(privileged)
+}
+
+func (v *volume) StreamIn(path string, tarStream io.Reader) error {
+	return v.bcVolume.StreamIn(path, tarStream)
+}
+
+func (v *volume) StreamOut(path string) (io.ReadCloser, error) {
+	return v.bcVolume.StreamOut(path)
+}
+
+func (v *volume) Properties() (baggageclaim.VolumeProperties, error) {
+	return v.bcVolume.Properties()
+}
+
+func (v *volume) Destroy() error {
+	return v.bcVolume.Destroy()
+}
+
+func (v *volume) COWStrategy() baggageclaim.COWStrategy {
+	return baggageclaim.COWStrategy{
+		Parent: v.bcVolume,
+	}
+}
+
+func (v *volume) InitializeResourceCache(urc *db.UsedResourceCache) error {
+	return v.dbVolume.InitializeResourceCache(urc)
+}
+
+func (v *volume) InitializeTaskCache(
+	logger lager.Logger,
+	jobID int,
+	stepName string,
+	path string,
+	privileged bool,
+) error {
+	if v.dbVolume.ParentHandle() == "" {
+		return v.dbVolume.InitializeTaskCache(jobID, stepName, path)
 	}
 
-	size, err := v.SizeInBytes()
+	logger.Debug("creating-an-import-volume", lager.Data{"path": v.bcVolume.Path()})
+
+	// always create, if there are any existing task cache volumes they will be gced
+	// after initialization of the current one
+	importVolume, err := v.volumeClient.CreateVolumeForTaskCache(
+		logger,
+		VolumeSpec{
+			Strategy:   baggageclaim.ImportStrategy{Path: v.bcVolume.Path()},
+			Privileged: privileged,
+		},
+		v.dbVolume.TeamID(),
+		jobID,
+		stepName,
+		path,
+	)
 	if err != nil {
-		logger.Error("failed-to-get-volume-size", err)
-
-		err = v.db.SetVolumeTTL(v.Handle(), ttl)
-		if err != nil {
-			logger.Error("failed-to-set-volume-ttl", err)
-		}
-
-		return
+		return err
 	}
 
-	err = v.db.SetVolumeTTLAndSizeInBytes(v.Handle(), ttl, size)
-	if err != nil {
-		logger.Error("failed-to-set-volume-ttl-and-size", err)
-	}
+	return importVolume.InitializeTaskCache(logger, jobID, stepName, path, privileged)
+}
+
+func (v *volume) CreateChildForContainer(creatingContainer db.CreatingContainer, mountPath string) (db.CreatingVolume, error) {
+	return v.dbVolume.CreateChildForContainer(creatingContainer, mountPath)
 }

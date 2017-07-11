@@ -36,15 +36,28 @@ func (s *Server) ListBuilds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := db.Page{Until: until, Since: since, Limit: limit}
+
 	var builds []db.Build
 	var pagination db.Pagination
 
 	authTeam, authTeamFound := auth.GetTeam(r)
 	if authTeamFound {
-		teamDB := s.teamDBFactory.GetTeamDB(authTeam.Name())
-		builds, pagination, err = teamDB.GetPrivateAndPublicBuilds(page)
+		var team db.Team
+		var found bool
+		team, found, err = s.teamFactory.FindTeam(authTeam.Name())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if !found {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		builds, pagination, err = team.PrivateAndPublicBuilds(page)
 	} else {
-		builds, pagination, err = s.buildsDB.GetPublicBuilds(page)
+		builds, pagination, err = s.buildFactory.PublicBuilds(page)
 	}
 
 	if err != nil {

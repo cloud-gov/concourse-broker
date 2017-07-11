@@ -12,28 +12,26 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-//go:generate counterfeiter . SaveWorkerDB
-
-type SaveWorkerDB interface {
-	SaveWorker(db.WorkerInfo, time.Duration) (db.SavedWorker, error)
-}
-
 func NewHardcoded(
-	logger lager.Logger, workerDB SaveWorkerDB, clock c.Clock,
-	gardenAddr string, baggageclaimURL string, resourceTypesNG []atc.WorkerResourceType,
+	logger lager.Logger,
+	workerFactory db.WorkerFactory,
+	clock c.Clock,
+	gardenAddr string,
+	baggageclaimURL string,
+	resourceTypes []atc.WorkerResourceType,
 ) ifrit.RunFunc {
 	return func(signals <-chan os.Signal, ready chan<- struct{}) error {
-		workerInfo := db.WorkerInfo{
+		workerInfo := atc.Worker{
 			GardenAddr:       gardenAddr,
 			BaggageclaimURL:  baggageclaimURL,
 			ActiveContainers: 0,
-			ResourceTypes:    resourceTypesNG,
+			ResourceTypes:    resourceTypes,
 			Platform:         "linux",
 			Tags:             []string{},
 			Name:             gardenAddr,
 		}
 
-		_, err := workerDB.SaveWorker(workerInfo, 30*time.Second)
+		_, err := workerFactory.SaveWorker(workerInfo, 30*time.Second)
 		if err != nil {
 			logger.Error("could-not-save-garden-worker-provided", err)
 			return err
@@ -47,7 +45,7 @@ func NewHardcoded(
 		for {
 			select {
 			case <-ticker.C():
-				_, err = workerDB.SaveWorker(workerInfo, 30*time.Second)
+				_, err = workerFactory.SaveWorker(workerInfo, 30*time.Second)
 				if err != nil {
 					logger.Error("could-not-save-garden-worker-provided", err)
 				}

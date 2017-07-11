@@ -11,22 +11,24 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"code.cloudfoundry.org/garden"
 	gconn "code.cloudfoundry.org/garden/client/connection"
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/worker/transport"
 	"github.com/concourse/atc/worker/transport/transportfakes"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/tedsuo/rata"
 
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 	"github.com/concourse/retryhttp/retryhttpfakes"
 )
 
 var _ = Describe("hijackStreamer", func() {
 	var (
-		savedWorker          dbng.Worker
+		savedWorker          *dbfakes.FakeWorker
 		savedWorkerAddress   string
 		fakeDB               *transportfakes.FakeTransportDB
 		fakeRoundTripper     *transportfakes.FakeRoundTripper
@@ -40,13 +42,15 @@ var _ = Describe("hijackStreamer", func() {
 	)
 	BeforeEach(func() {
 		savedWorkerAddress = "some-garden-addr"
-		savedWorker = dbng.Worker{
-			GardenAddr: &savedWorkerAddress,
-			ExpiresIn:  123,
-			State:      dbng.WorkerStateRunning,
-		}
+
+		savedWorker = new(dbfakes.FakeWorker)
+
+		savedWorker.GardenAddrReturns(&savedWorkerAddress)
+		savedWorker.ExpiresAtReturns(time.Now().Add(123 * time.Minute))
+		savedWorker.StateReturns(db.WorkerStateRunning)
+
 		fakeDB = new(transportfakes.FakeTransportDB)
-		fakeDB.GetWorkerReturns(&savedWorker, true, nil)
+		fakeDB.GetWorkerReturns(savedWorker, true, nil)
 
 		fakeRequestGenerator = new(transportfakes.FakeRequestGenerator)
 
@@ -171,8 +175,15 @@ var _ = Describe("hijackStreamer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(fakeRoundTripper.RoundTripCallCount()).To(Equal(1))
 				actualRequest := fakeRoundTripper.RoundTripArgsForCall(0)
-				Expect(actualRequest).To(Equal(expectedRequest))
+				Expect(actualRequest.Method).To(Equal(expectedRequest.Method))
+				Expect(actualRequest.URL).To(Equal(expectedRequest.URL))
+				Expect(actualRequest.Header).To(Equal(expectedRequest.Header))
+
+				s, err := ioutil.ReadAll(actualRequest.Body)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(s)).To(Equal("some-request-body"))
 			})
+
 		})
 	})
 
@@ -283,7 +294,14 @@ var _ = Describe("hijackStreamer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(fakeHijackableClient.DoCallCount()).To(Equal(1))
 				actualRequest := fakeHijackableClient.DoArgsForCall(0)
-				Expect(actualRequest).To(Equal(expectedRequest))
+
+				Expect(actualRequest.Method).To(Equal(expectedRequest.Method))
+				Expect(actualRequest.URL).To(Equal(expectedRequest.URL))
+				Expect(actualRequest.Header).To(Equal(expectedRequest.Header))
+
+				s, err := ioutil.ReadAll(actualRequest.Body)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(s)).To(Equal("some-request-body"))
 			})
 		})
 	})

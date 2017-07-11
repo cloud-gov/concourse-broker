@@ -12,34 +12,22 @@ import (
 
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/db"
-	"github.com/concourse/atc/dbng"
 )
 
 var _ = Describe("Logging In", func() {
 	var atcCommand *ATCCommand
-	var defaultTeam dbng.Team
 	var pipelineName string
-	var pipeline dbng.Pipeline
+	var pipeline db.Pipeline
 
 	BeforeEach(func() {
-		postgresRunner.Truncate()
-		dbConn = db.Wrap(postgresRunner.Open())
-		dbngConn = dbng.Wrap(postgresRunner.Open())
-
-		teamFactory := dbng.NewTeamFactory(dbngConn)
 		var err error
-		var found bool
-		defaultTeam, found, err = teamFactory.FindTeam(atc.DefaultTeamName)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue()) // created by postgresRunner
-
 		pipelineName = atc.DefaultPipelineName
 
 		pipeline, _, err = defaultTeam.SavePipeline(pipelineName, atc.Config{
 			Jobs: atc.JobConfigs{
 				{Name: "job-name"},
 			},
-		}, dbng.ConfigVersion(1), dbng.PipelineUnpaused)
+		}, db.ConfigVersion(1), db.PipelineUnpaused)
 		Expect(err).NotTo(HaveOccurred())
 
 		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{}, BASIC_AUTH)
@@ -49,8 +37,6 @@ var _ = Describe("Logging In", func() {
 
 	AfterEach(func() {
 		atcCommand.Stop()
-
-		Expect(dbngConn.Close()).To(Succeed())
 	})
 
 	homepage := func() string {
@@ -71,9 +57,24 @@ var _ = Describe("Logging In", func() {
 				Expect(page.Destroy()).To(Succeed())
 			})
 
+			Describe("log in with bad credentials", func() {
+				BeforeEach(func() {
+					Expect(page.Navigate(homepage() + "/teams/main/login")).To(Succeed())
+					FillLoginFormWithCredentials(page, "some-user", "bad-password")
+				})
+
+				It("shows an error message", func() {
+					Expect(page.FindByButton("login").Click()).To(Succeed())
+					Eventually(page.FindByClass("login-error")).Should(BeVisible())
+				})
+			})
+
 			Describe("after the user logs in", func() {
-				It("should display the pipelines the user has access to in the sidebar", func() {
+				BeforeEach(func() {
 					Login(page, homepage())
+				})
+
+				It("should display the pipelines the user has access to in the sidebar", func() {
 					Expect(page.FindByClass("sidebar-toggle").Click()).To(Succeed())
 					Eventually(page.FindByLink("main")).Should(BeVisible())
 				})
@@ -98,9 +99,13 @@ var _ = Describe("Logging In", func() {
 
 				BeforeEach(func() {
 					// job build data
-					build, err := pipeline.CreateJobBuild("job-name")
+					job, found, err := pipeline.Job("job-name")
+					Expect(err).ToNot(HaveOccurred())
+					Expect(found).To(BeTrue())
+
+					build, err := job.CreateBuild()
 					Expect(err).NotTo(HaveOccurred())
-					buildPath = fmt.Sprintf("/builds/%d", build.ID)
+					buildPath = fmt.Sprintf("/builds/%d", build.ID())
 				})
 
 				Context("navigating to a team specific page that exists", func() {

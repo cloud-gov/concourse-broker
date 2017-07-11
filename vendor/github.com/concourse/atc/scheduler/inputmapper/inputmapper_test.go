@@ -5,11 +5,10 @@ import (
 
 	"code.cloudfoundry.org/lager/lagertest"
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/config"
 	"github.com/concourse/atc/db/algorithm"
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/scheduler/inputmapper"
 	"github.com/concourse/atc/scheduler/inputmapper/inputconfig/inputconfigfakes"
-	"github.com/concourse/atc/scheduler/inputmapper/inputmapperfakes"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -17,7 +16,7 @@ import (
 
 var _ = Describe("Inputmapper", func() {
 	var (
-		fakeDB          *inputmapperfakes.FakeInputMapperDB
+		fakePipeline    *dbfakes.FakePipeline
 		fakeTransformer *inputconfigfakes.FakeTransformer
 
 		inputMapper inputmapper.InputMapper
@@ -26,10 +25,10 @@ var _ = Describe("Inputmapper", func() {
 	)
 
 	BeforeEach(func() {
-		fakeDB = new(inputmapperfakes.FakeInputMapperDB)
+		fakePipeline = new(dbfakes.FakePipeline)
 		fakeTransformer = new(inputconfigfakes.FakeTransformer)
 
-		inputMapper = inputmapper.NewInputMapper(fakeDB, fakeTransformer)
+		inputMapper = inputmapper.NewInputMapper(fakePipeline, fakeTransformer)
 
 		disaster = errors.New("bad thing")
 	})
@@ -37,7 +36,7 @@ var _ = Describe("Inputmapper", func() {
 	Describe("SaveNextInputMapping", func() {
 		var (
 			versionsDB   *algorithm.VersionsDB
-			jobConfig    atc.JobConfig
+			fakeJob      *dbfakes.FakeJob
 			inputMapping algorithm.InputMapping
 			mappingErr   error
 		)
@@ -69,19 +68,20 @@ var _ = Describe("Inputmapper", func() {
 			inputMapping, mappingErr = inputMapper.SaveNextInputMapping(
 				lagertest.NewTestLogger("test"),
 				versionsDB,
-				jobConfig,
+				fakeJob,
 			)
 		})
 
 		Context("when inputs resolve", func() {
 			BeforeEach(func() {
-				jobConfig = atc.JobConfig{
-					Name: "some-job",
+				fakeJob = new(dbfakes.FakeJob)
+				fakeJob.NameReturns("some-job")
+				fakeJob.ConfigReturns(atc.JobConfig{
 					Plan: atc.PlanSequence{
 						{Get: "alias", Resource: "a", Version: &atc.VersionConfig{Latest: true}},
 						{Get: "b", Version: &atc.VersionConfig{Latest: true}},
 					},
-				}
+				})
 			})
 
 			Context("when transforming the input configs fails", func() {
@@ -99,12 +99,12 @@ var _ = Describe("Inputmapper", func() {
 					Expect(actualVersionsDB).To(Equal(versionsDB))
 					Expect(actualJobName).To(Equal("some-job"))
 					Expect(actualJobInputs).To(ConsistOf(
-						config.JobInput{
+						atc.JobInput{
 							Name:     "alias",
 							Resource: "a",
 							Version:  &atc.VersionConfig{Latest: true},
 						},
-						config.JobInput{
+						atc.JobInput{
 							Name:     "b",
 							Resource: "b",
 							Version:  &atc.VersionConfig{Latest: true},
@@ -133,7 +133,7 @@ var _ = Describe("Inputmapper", func() {
 
 				Context("when saving the independent input mapping fails", func() {
 					BeforeEach(func() {
-						fakeDB.SaveIndependentInputMappingReturns(disaster)
+						fakeJob.SaveIndependentInputMappingReturns(disaster)
 					})
 
 					It("returns the error", func() {
@@ -141,24 +141,23 @@ var _ = Describe("Inputmapper", func() {
 					})
 
 					It("saved the right input mapping", func() {
-						Expect(fakeDB.SaveIndependentInputMappingCallCount()).To(Equal(1))
-						actualMapping, actualJobName := fakeDB.SaveIndependentInputMappingArgsForCall(0)
+						Expect(fakeJob.SaveIndependentInputMappingCallCount()).To(Equal(1))
+						actualMapping := fakeJob.SaveIndependentInputMappingArgsForCall(0)
 						Expect(actualMapping).To(Equal(algorithm.InputMapping{
 							"alias": algorithm.InputVersion{VersionID: 1, FirstOccurrence: true},
 							"b":     algorithm.InputVersion{VersionID: 2, FirstOccurrence: true},
 						}))
-						Expect(actualJobName).To(Equal("some-job"))
 					})
 				})
 
 				Context("when saving the independent input mapping succeeds", func() {
 					BeforeEach(func() {
-						fakeDB.SaveIndependentInputMappingReturns(nil)
+						fakeJob.SaveIndependentInputMappingReturns(nil)
 					})
 
 					Context("when saving the next input mapping fails", func() {
 						BeforeEach(func() {
-							fakeDB.SaveNextInputMappingReturns(disaster)
+							fakeJob.SaveNextInputMappingReturns(disaster)
 						})
 
 						It("returns the error", func() {
@@ -166,19 +165,18 @@ var _ = Describe("Inputmapper", func() {
 						})
 
 						It("saved the right input mapping", func() {
-							Expect(fakeDB.SaveIndependentInputMappingCallCount()).To(Equal(1))
-							actualMapping, actualJobName := fakeDB.SaveIndependentInputMappingArgsForCall(0)
+							Expect(fakeJob.SaveIndependentInputMappingCallCount()).To(Equal(1))
+							actualMapping := fakeJob.SaveIndependentInputMappingArgsForCall(0)
 							Expect(actualMapping).To(Equal(algorithm.InputMapping{
 								"alias": algorithm.InputVersion{VersionID: 1, FirstOccurrence: true},
 								"b":     algorithm.InputVersion{VersionID: 2, FirstOccurrence: true},
 							}))
-							Expect(actualJobName).To(Equal("some-job"))
 						})
 					})
 
 					Context("when saving the next input mapping succeeds", func() {
 						BeforeEach(func() {
-							fakeDB.SaveNextInputMappingReturns(nil)
+							fakeJob.SaveNextInputMappingReturns(nil)
 						})
 
 						It("returns the mapping", func() {
@@ -190,7 +188,7 @@ var _ = Describe("Inputmapper", func() {
 						})
 
 						It("didn't delete the mapping", func() {
-							Expect(fakeDB.DeleteNextInputMappingCallCount()).To(BeZero())
+							Expect(fakeJob.DeleteNextInputMappingCallCount()).To(BeZero())
 						})
 					})
 				})
@@ -199,13 +197,14 @@ var _ = Describe("Inputmapper", func() {
 
 		Context("when inputs only resolve individually", func() {
 			BeforeEach(func() {
-				jobConfig = atc.JobConfig{
-					Name: "some-job",
+				fakeJob = new(dbfakes.FakeJob)
+				fakeJob.NameReturns("some-job")
+				fakeJob.ConfigReturns(atc.JobConfig{
 					Plan: atc.PlanSequence{
 						{Get: "a", Version: &atc.VersionConfig{Latest: true}, Passed: []string{"upstream"}},
 						{Get: "b", Version: &atc.VersionConfig{Latest: true}, Passed: []string{"upstream"}},
 					},
-				}
+				})
 
 				fakeTransformer.TransformInputConfigsReturns(algorithm.InputConfigs{
 					{
@@ -221,12 +220,12 @@ var _ = Describe("Inputmapper", func() {
 						JobID:      1,
 					},
 				}, nil)
-				fakeDB.SaveIndependentInputMappingReturns(nil)
+				fakeJob.SaveIndependentInputMappingReturns(nil)
 			})
 
 			Context("when deleting the next input mapping fails", func() {
 				BeforeEach(func() {
-					fakeDB.DeleteNextInputMappingReturns(disaster)
+					fakeJob.DeleteNextInputMappingReturns(disaster)
 				})
 
 				It("returns the error", func() {
@@ -236,22 +235,20 @@ var _ = Describe("Inputmapper", func() {
 
 			Context("when deleting the next input mapping succeeds", func() {
 				BeforeEach(func() {
-					fakeDB.DeleteNextInputMappingReturns(nil)
+					fakeJob.DeleteNextInputMappingReturns(nil)
 				})
 
 				It("saved the right individual input mapping", func() {
-					actualMapping, actualJobName := fakeDB.SaveIndependentInputMappingArgsForCall(0)
+					actualMapping := fakeJob.SaveIndependentInputMappingArgsForCall(0)
 					Expect(actualMapping).To(Equal(algorithm.InputMapping{
 						"a": algorithm.InputVersion{VersionID: 1, FirstOccurrence: true},
 						"b": algorithm.InputVersion{VersionID: 2, FirstOccurrence: true},
 					}))
-					Expect(actualJobName).To(Equal("some-job"))
 				})
 
 				It("deleted the next input mapping", func() {
-					Expect(fakeDB.DeleteNextInputMappingCallCount()).To(Equal(1))
-					Expect(fakeDB.DeleteNextInputMappingArgsForCall(0)).To(Equal("some-job"))
-					Expect(fakeDB.SaveNextInputMappingCallCount()).To(BeZero())
+					Expect(fakeJob.DeleteNextInputMappingCallCount()).To(Equal(1))
+					Expect(fakeJob.SaveNextInputMappingCallCount()).To(BeZero())
 				})
 
 				It("returns an empty mapping and no error", func() {
@@ -263,13 +260,14 @@ var _ = Describe("Inputmapper", func() {
 
 		Context("when some inputs don't resolve", func() {
 			BeforeEach(func() {
-				jobConfig = atc.JobConfig{
-					Name: "some-job",
+				fakeJob = new(dbfakes.FakeJob)
+				fakeJob.NameReturns("some-job")
+				fakeJob.ConfigReturns(atc.JobConfig{
 					Plan: atc.PlanSequence{
 						{Get: "a", Version: &atc.VersionConfig{Latest: true}},
 						{Get: "no-versions", Version: &atc.VersionConfig{Latest: true}},
 					},
-				}
+				})
 
 				fakeTransformer.TransformInputConfigsReturns(algorithm.InputConfigs{
 					{
@@ -285,22 +283,20 @@ var _ = Describe("Inputmapper", func() {
 						JobID:      1,
 					},
 				}, nil)
-				fakeDB.SaveIndependentInputMappingReturns(nil)
-				fakeDB.DeleteNextInputMappingReturns(nil)
+				fakeJob.SaveIndependentInputMappingReturns(nil)
+				fakeJob.DeleteNextInputMappingReturns(nil)
 			})
 
 			It("saved the right individual input mapping", func() {
-				actualMapping, actualJobName := fakeDB.SaveIndependentInputMappingArgsForCall(0)
+				actualMapping := fakeJob.SaveIndependentInputMappingArgsForCall(0)
 				Expect(actualMapping).To(Equal(algorithm.InputMapping{
 					"a": algorithm.InputVersion{VersionID: 1, FirstOccurrence: true},
 				}))
-				Expect(actualJobName).To(Equal("some-job"))
 			})
 
 			It("deleted the next input mapping", func() {
-				Expect(fakeDB.DeleteNextInputMappingCallCount()).To(Equal(1))
-				Expect(fakeDB.DeleteNextInputMappingArgsForCall(0)).To(Equal("some-job"))
-				Expect(fakeDB.SaveNextInputMappingCallCount()).To(BeZero())
+				Expect(fakeJob.DeleteNextInputMappingCallCount()).To(Equal(1))
+				Expect(fakeJob.SaveNextInputMappingCallCount()).To(BeZero())
 			})
 
 			It("returns an empty mapping and no error", func() {
@@ -311,13 +307,14 @@ var _ = Describe("Inputmapper", func() {
 
 		Context("when a pinned version is missing but the remaining versions resolve", func() {
 			BeforeEach(func() {
-				jobConfig = atc.JobConfig{
-					Name: "some-job",
+				fakeJob = new(dbfakes.FakeJob)
+				fakeJob.NameReturns("some-job")
+				fakeJob.ConfigReturns(atc.JobConfig{
 					Plan: atc.PlanSequence{
 						{Get: "a", Version: &atc.VersionConfig{Pinned: atc.Version{"doesn't": "exist"}}},
 						{Get: "b", Version: &atc.VersionConfig{Latest: true}},
 					},
-				}
+				})
 
 				fakeTransformer.TransformInputConfigsReturns(algorithm.InputConfigs{
 					{
@@ -327,22 +324,20 @@ var _ = Describe("Inputmapper", func() {
 						JobID:      1,
 					},
 				}, nil)
-				fakeDB.SaveIndependentInputMappingReturns(nil)
-				fakeDB.DeleteNextInputMappingReturns(nil)
+				fakeJob.SaveIndependentInputMappingReturns(nil)
+				fakeJob.DeleteNextInputMappingReturns(nil)
 			})
 
 			It("saved the right individual input mapping", func() {
-				actualMapping, actualJobName := fakeDB.SaveIndependentInputMappingArgsForCall(0)
+				actualMapping := fakeJob.SaveIndependentInputMappingArgsForCall(0)
 				Expect(actualMapping).To(Equal(algorithm.InputMapping{
 					"b": algorithm.InputVersion{VersionID: 2, FirstOccurrence: true},
 				}))
-				Expect(actualJobName).To(Equal("some-job"))
 			})
 
 			It("deleted the next input mapping", func() {
-				Expect(fakeDB.DeleteNextInputMappingCallCount()).To(Equal(1))
-				Expect(fakeDB.DeleteNextInputMappingArgsForCall(0)).To(Equal("some-job"))
-				Expect(fakeDB.SaveNextInputMappingCallCount()).To(BeZero())
+				Expect(fakeJob.DeleteNextInputMappingCallCount()).To(Equal(1))
+				Expect(fakeJob.SaveNextInputMappingCallCount()).To(BeZero())
 			})
 
 			It("returns an empty mapping and no error", func() {
@@ -353,29 +348,28 @@ var _ = Describe("Inputmapper", func() {
 
 		Context("when the job has no inputs", func() {
 			BeforeEach(func() {
-				jobConfig = atc.JobConfig{
-					Name: "some-job",
+				fakeJob = new(dbfakes.FakeJob)
+				fakeJob.NameReturns("some-job")
+				fakeJob.ConfigReturns(atc.JobConfig{
 					Plan: atc.PlanSequence{
 						{Task: "some-task", TaskConfigPath: "some-task.yml"},
 					},
-				}
+				})
 
 				fakeTransformer.TransformInputConfigsReturns(algorithm.InputConfigs{}, nil)
-				fakeDB.SaveIndependentInputMappingReturns(nil)
-				fakeDB.DeleteNextInputMappingReturns(nil)
+				fakeJob.SaveIndependentInputMappingReturns(nil)
+				fakeJob.DeleteNextInputMappingReturns(nil)
 			})
 
 			It("saved the right individual input mapping", func() {
-				actualMapping, actualJobName := fakeDB.SaveIndependentInputMappingArgsForCall(0)
+				actualMapping := fakeJob.SaveIndependentInputMappingArgsForCall(0)
 				Expect(actualMapping).To(Equal(algorithm.InputMapping{}))
-				Expect(actualJobName).To(Equal("some-job"))
 			})
 
 			It("saved the right next input mapping", func() {
-				actualMapping, actualJobName := fakeDB.SaveNextInputMappingArgsForCall(0)
+				actualMapping := fakeJob.SaveNextInputMappingArgsForCall(0)
 				Expect(actualMapping).To(Equal(algorithm.InputMapping{}))
-				Expect(actualJobName).To(Equal("some-job"))
-				Expect(fakeDB.DeleteNextInputMappingCallCount()).To(BeZero())
+				Expect(fakeJob.DeleteNextInputMappingCallCount()).To(BeZero())
 			})
 
 			It("returns an empty mapping and no error", func() {

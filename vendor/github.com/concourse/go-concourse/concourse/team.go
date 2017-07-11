@@ -27,7 +27,9 @@ type Team interface {
 	UnpauseResource(pipelineName string, resourceName string) (bool, error)
 	ListPipelines() ([]atc.Pipeline, error)
 	PipelineConfig(pipelineName string) (atc.Config, atc.RawConfig, string, bool, error)
-	CreateOrUpdatePipelineConfig(pipelineName string, configVersion string, passedConfig atc.Config) (bool, bool, []ConfigWarning, error)
+	CreateOrUpdatePipelineConfig(pipelineName string, configVersion string, passedConfig []byte) (bool, bool, []ConfigWarning, error)
+
+	CreatePipelineBuild(pipelineName string, plan atc.Plan) (atc.Build, error)
 
 	BuildInputsForJob(pipelineName string, jobName string) ([]atc.BuildInput, bool, error)
 
@@ -35,6 +37,7 @@ type Team interface {
 	JobBuild(pipelineName, jobName, buildName string) (atc.Build, bool, error)
 	JobBuilds(pipelineName string, jobName string, page Page) ([]atc.Build, Pagination, bool, error)
 	CreateJobBuild(pipelineName string, jobName string) (atc.Build, error)
+	ListJobs(pipelineName string) ([]atc.Job, error)
 
 	PauseJob(pipelineName string, jobName string) (bool, error)
 	UnpauseJob(pipelineName string, jobName string) (bool, error)

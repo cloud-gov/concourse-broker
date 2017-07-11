@@ -1,6 +1,6 @@
 package migrations
 
-import "github.com/BurntSushi/migration"
+import "github.com/concourse/atc/db/migration"
 
 func AddCompositeUniqueConstraintToVolumes(tx migration.LimitedTx) error {
 	_, err := tx.Exec(`

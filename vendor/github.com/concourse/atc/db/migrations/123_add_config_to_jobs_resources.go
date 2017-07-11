@@ -3,8 +3,8 @@ package migrations
 import (
 	"encoding/json"
 
-	"github.com/BurntSushi/migration"
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/db/migration"
 )
 
 func AddConfigToJobsResources(tx migration.LimitedTx) error {

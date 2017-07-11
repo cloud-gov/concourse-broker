@@ -8,33 +8,20 @@ import (
 	. "github.com/sclevine/agouti/matchers"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 )
 
 var _ = Describe("Navigation", func() {
 	var atcCommand *ATCCommand
-	var defaultTeam dbng.Team
 
 	BeforeEach(func() {
-		postgresRunner.Truncate()
-		dbngConn = dbng.Wrap(postgresRunner.Open())
-
-		teamFactory := dbng.NewTeamFactory(dbngConn)
-		var err error
-		var found bool
-		defaultTeam, found, err = teamFactory.FindTeam(atc.DefaultTeamName)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue()) // created by postgresRunner
-
 		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{}, BASIC_AUTH)
-		err = atcCommand.Start()
+		err := atcCommand.Start()
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
 		atcCommand.Stop()
-
-		Expect(dbngConn.Close()).To(Succeed())
 	})
 
 	var page *agouti.Page
@@ -65,7 +52,7 @@ var _ = Describe("Navigation", func() {
 						Name: "job-1",
 					},
 				},
-			}, dbng.ConfigVersion(1), dbng.PipelineUnpaused)
+			}, db.ConfigVersion(1), db.PipelineUnpaused)
 			Expect(err).NotTo(HaveOccurred())
 
 			_, _, err = defaultTeam.SavePipeline("pipeline-2", atc.Config{
@@ -74,7 +61,7 @@ var _ = Describe("Navigation", func() {
 						Name: "job-2",
 					},
 				},
-			}, dbng.ConfigVersion(1), dbng.PipelineUnpaused)
+			}, db.ConfigVersion(1), db.PipelineUnpaused)
 			Expect(err).NotTo(HaveOccurred())
 
 		})

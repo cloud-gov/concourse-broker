@@ -4,199 +4,223 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"path/filepath"
-	"time"
 
-	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager"
 
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/creds"
+	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/resource"
 	"github.com/concourse/atc/worker"
 )
 
 type gardenFactory struct {
-	workerClient    worker.Client
-	tracker         resource.Tracker
-	resourceFetcher resource.Fetcher
-}
+	workerClient           worker.Client
+	resourceFetcher        resource.Fetcher
+	resourceFactory        resource.ResourceFactory
+	dbResourceCacheFactory db.ResourceCacheFactory
+	variablesFactory       creds.VariablesFactory
 
-//go:generate counterfeiter . TrackerFactory
-
-type TrackerFactory interface {
-	TrackerFor(client worker.Client) resource.Tracker
+	putActions map[atc.PlanID]*PutAction
 }
 
 func NewGardenFactory(
 	workerClient worker.Client,
-	tracker resource.Tracker,
 	resourceFetcher resource.Fetcher,
+	resourceFactory resource.ResourceFactory,
+	dbResourceCacheFactory db.ResourceCacheFactory,
+	variablesFactory creds.VariablesFactory,
 ) Factory {
 	return &gardenFactory{
-		workerClient:    workerClient,
-		tracker:         tracker,
-		resourceFetcher: resourceFetcher,
+		workerClient:           workerClient,
+		resourceFetcher:        resourceFetcher,
+		resourceFactory:        resourceFactory,
+		dbResourceCacheFactory: dbResourceCacheFactory,
+		variablesFactory:       variablesFactory,
+		putActions:             map[atc.PlanID]*PutAction{},
 	}
 }
 
-func (factory *gardenFactory) DependentGet(
-	logger lager.Logger,
-	stepMetadata StepMetadata,
-	sourceName SourceName,
-	id worker.Identifier,
-	workerMetadata worker.Metadata,
-	delegate GetDelegate,
-	resourceConfig atc.ResourceConfig,
-	tags atc.Tags,
-	teamID int,
-	params atc.Params,
-	resourceTypes atc.ResourceTypes,
-	containerSuccessTTL time.Duration,
-	containerFailureTTL time.Duration,
-) StepFactory {
-	return newDependentGetStep(
-		logger,
-		sourceName,
-		resourceConfig,
-		params,
-		stepMetadata,
-		resource.Session{
-			ID:        id,
-			Ephemeral: false,
-			Metadata:  workerMetadata,
-		},
-		tags,
-		teamID,
-		delegate,
-		factory.resourceFetcher,
-		resourceTypes,
-		containerSuccessTTL,
-		containerFailureTTL,
-	)
+type GetStepFactory struct {
+	ActionsStep
+}
+type GetStep Step
+
+func (s GetStepFactory) Using(repository *worker.ArtifactRepository) Step {
+	return GetStep(s.ActionsStep.Using(repository))
+}
+
+type PutStepFactory struct {
+	ActionsStep
+}
+
+type PutStep Step
+
+func (s PutStepFactory) Using(repository *worker.ArtifactRepository) Step {
+	return PutStep(s.ActionsStep.Using(repository))
+}
+
+type TaskStepFactory struct {
+	ActionsStep
+}
+
+type TaskStep Step
+
+func (s TaskStepFactory) Using(repository *worker.ArtifactRepository) Step {
+	return TaskStep(s.ActionsStep.Using(repository))
 }
 
 func (factory *gardenFactory) Get(
 	logger lager.Logger,
+	plan atc.Plan,
+	build db.Build,
 	stepMetadata StepMetadata,
-	sourceName SourceName,
-	id worker.Identifier,
-	workerMetadata worker.Metadata,
-	delegate GetDelegate,
-	resourceConfig atc.ResourceConfig,
-	tags atc.Tags,
-	teamID int,
-	params atc.Params,
-	version atc.Version,
-	resourceTypes atc.ResourceTypes,
-	containerSuccessTTL time.Duration,
-	containerFailureTTL time.Duration,
+	workerMetadata db.ContainerMetadata,
+	buildEventsDelegate ActionsBuildEventsDelegate,
+	imageFetchingDelegate ImageFetchingDelegate,
 ) StepFactory {
 	workerMetadata.WorkingDirectory = resource.ResourcesDir("get")
-	return newGetStep(
-		logger,
-		sourceName,
-		resourceConfig,
-		version,
-		params,
-		resource.ResourceCacheIdentifier{
-			Type:    resource.ResourceType(resourceConfig.Type),
-			Source:  resourceConfig.Source,
-			Params:  params,
-			Version: version,
-		},
-		stepMetadata,
-		resource.Session{
-			ID:        id,
-			Metadata:  workerMetadata,
-			Ephemeral: false,
-		},
-		tags,
-		teamID,
-		delegate,
-		factory.resourceFetcher,
-		resourceTypes,
 
-		containerSuccessTTL,
-		containerFailureTTL,
-	)
+	variables := factory.variablesFactory.NewVariables(build.TeamName(), build.PipelineName())
+
+	getAction := &GetAction{
+		Type:          plan.Get.Type,
+		Name:          plan.Get.Name,
+		Resource:      plan.Get.Resource,
+		Source:        creds.NewSource(variables, plan.Get.Source),
+		Params:        plan.Get.Params,
+		VersionSource: NewVersionSourceFromPlan(plan.Get, factory.putActions),
+		Tags:          plan.Get.Tags,
+		Outputs:       []string{plan.Get.Name},
+
+		imageFetchingDelegate:  imageFetchingDelegate,
+		resourceFetcher:        factory.resourceFetcher,
+		teamID:                 build.TeamID(),
+		buildID:                build.ID(),
+		planID:                 plan.ID,
+		containerMetadata:      workerMetadata,
+		dbResourceCacheFactory: factory.dbResourceCacheFactory,
+		stepMetadata:           stepMetadata,
+
+		// TODO: remove after all actions are introduced
+		resourceTypes: creds.NewVersionedResourceTypes(variables, plan.Get.VersionedResourceTypes),
+	}
+
+	actions := []Action{getAction}
+
+	return GetStepFactory{NewActionsStep(logger, actions, buildEventsDelegate)}
 }
 
 func (factory *gardenFactory) Put(
 	logger lager.Logger,
+	plan atc.Plan,
+	build db.Build,
 	stepMetadata StepMetadata,
-	id worker.Identifier,
-	workerMetadata worker.Metadata,
-	delegate PutDelegate,
-	resourceConfig atc.ResourceConfig,
-	tags atc.Tags,
-	teamID int,
-	params atc.Params,
-	resourceTypes atc.ResourceTypes,
-	containerSuccessTTL time.Duration,
-	containerFailureTTL time.Duration,
+	workerMetadata db.ContainerMetadata,
+	buildEventsDelegate ActionsBuildEventsDelegate,
+	imageFetchingDelegate ImageFetchingDelegate,
 ) StepFactory {
 	workerMetadata.WorkingDirectory = resource.ResourcesDir("put")
-	return newPutStep(
-		logger,
-		resourceConfig,
-		params,
-		stepMetadata,
-		resource.Session{
-			ID:        id,
-			Ephemeral: false,
-			Metadata:  workerMetadata,
-		},
-		tags,
-		teamID,
-		delegate,
-		factory.tracker,
-		resourceTypes,
-		containerSuccessTTL,
-		containerFailureTTL,
-	)
+
+	variables := factory.variablesFactory.NewVariables(build.TeamName(), build.PipelineName())
+
+	putAction := &PutAction{
+		Type:     plan.Put.Type,
+		Name:     plan.Put.Name,
+		Resource: plan.Put.Resource,
+		Source:   creds.NewSource(variables, plan.Put.Source),
+		Params:   plan.Put.Params,
+		Tags:     plan.Put.Tags,
+
+		imageFetchingDelegate: imageFetchingDelegate,
+		resourceFactory:       factory.resourceFactory,
+		teamID:                build.TeamID(),
+		buildID:               build.ID(),
+		planID:                plan.ID,
+		containerMetadata:     workerMetadata,
+		stepMetadata:          stepMetadata,
+
+		resourceTypes: creds.NewVersionedResourceTypes(variables, plan.Put.VersionedResourceTypes),
+	}
+	factory.putActions[plan.ID] = putAction
+
+	actions := []Action{putAction}
+
+	return PutStepFactory{NewActionsStep(logger, actions, buildEventsDelegate)}
 }
 
 func (factory *gardenFactory) Task(
 	logger lager.Logger,
-	sourceName SourceName,
-	id worker.Identifier,
-	workerMetadata worker.Metadata,
-	delegate TaskDelegate,
-	privileged Privileged,
-	tags atc.Tags,
-	teamID int,
-	configSource TaskConfigSource,
-	resourceTypes atc.ResourceTypes,
-	inputMapping map[string]string,
-	outputMapping map[string]string,
-	imageArtifactName string,
-	clock clock.Clock,
-	containerSuccessTTL time.Duration,
-	containerFailureTTL time.Duration,
+	plan atc.Plan,
+	build db.Build,
+	containerMetadata db.ContainerMetadata,
+	taskBuildEventsDelegate TaskBuildEventsDelegate,
+	buildEventsDelegate ActionsBuildEventsDelegate,
+	imageFetchingDelegate ImageFetchingDelegate,
 ) StepFactory {
-	workingDirectory := factory.taskWorkingDirectory(sourceName)
-	workerMetadata.WorkingDirectory = workingDirectory
-	return newTaskStep(
-		logger,
-		id,
-		workerMetadata,
-		tags,
-		teamID,
-		delegate,
-		privileged,
-		configSource,
-		factory.workerClient,
-		workingDirectory,
-		resourceTypes,
-		inputMapping,
-		outputMapping,
-		imageArtifactName,
-		clock,
-		containerSuccessTTL,
-		containerFailureTTL,
-	)
+	workingDirectory := factory.taskWorkingDirectory(worker.ArtifactName(plan.Task.Name))
+	containerMetadata.WorkingDirectory = workingDirectory
+
+	var taskConfigFetcher TaskConfigFetcher
+	if plan.Task.ConfigPath != "" && (plan.Task.Config != nil || plan.Task.Params != nil) {
+		taskConfigFetcher = MergedConfigFetcher{
+			A: FileConfigFetcher{plan.Task.ConfigPath},
+			B: StaticConfigFetcher{Plan: *plan.Task},
+		}
+	} else if plan.Task.Config != nil {
+		taskConfigFetcher = StaticConfigFetcher{Plan: *plan.Task}
+	} else if plan.Task.ConfigPath != "" {
+		taskConfigFetcher = FileConfigFetcher{plan.Task.ConfigPath}
+	}
+
+	taskConfigFetcher = ValidatingConfigFetcher{ConfigFetcher: taskConfigFetcher}
+
+	taskConfigFetcher = DeprecationConfigFetcher{
+		Delegate: taskConfigFetcher,
+		Stderr:   imageFetchingDelegate.Stderr(),
+	}
+
+	fetchConfigAction := &FetchConfigAction{
+		configFetcher: taskConfigFetcher,
+	}
+
+	configSource := &FetchConfigActionTaskConfigSource{
+		Action: fetchConfigAction,
+	}
+
+	variables := factory.variablesFactory.NewVariables(build.TeamName(), build.PipelineName())
+
+	taskAction := &TaskAction{
+		privileged:    Privileged(plan.Task.Privileged),
+		configSource:  configSource,
+		tags:          plan.Task.Tags,
+		inputMapping:  plan.Task.InputMapping,
+		outputMapping: plan.Task.OutputMapping,
+
+		artifactsRoot:     workingDirectory,
+		imageArtifactName: plan.Task.ImageArtifactName,
+
+		buildEventsDelegate:   taskBuildEventsDelegate,
+		imageFetchingDelegate: imageFetchingDelegate,
+		workerPool:            factory.workerClient,
+		teamID:                build.TeamID(),
+		buildID:               build.ID(),
+		jobID:                 build.JobID(),
+		stepName:              plan.Task.Name,
+		planID:                plan.ID,
+		containerMetadata:     containerMetadata,
+
+		resourceTypes: creds.NewVersionedResourceTypes(variables, plan.Task.VersionedResourceTypes),
+
+		variables: variables,
+	}
+
+	actions := []Action{fetchConfigAction, taskAction}
+
+	return TaskStepFactory{NewActionsStep(logger, actions, buildEventsDelegate)}
 }
 
-func (factory *gardenFactory) taskWorkingDirectory(sourceName SourceName) string {
+func (factory *gardenFactory) taskWorkingDirectory(sourceName worker.ArtifactName) string {
 	sum := sha1.Sum([]byte(sourceName))
 	return filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
 }

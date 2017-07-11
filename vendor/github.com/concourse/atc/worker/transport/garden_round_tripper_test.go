@@ -4,12 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"time"
 
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/worker/transport"
 	"github.com/concourse/atc/worker/transport/transportfakes"
 	"github.com/concourse/retryhttp/retryhttpfakes"
 
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -67,13 +69,12 @@ var _ = Describe("GardenRoundTripper #RoundTrip", func() {
 			fakeRoundTripper.RoundTripReturns(nil, errors.New("some-error"))
 
 			address := "some-new-worker-address"
-			savedWorker := dbng.Worker{
-				GardenAddr: &address,
-				ExpiresIn:  123,
-				State:      dbng.WorkerStateRunning,
-			}
+			savedWorker := new(dbfakes.FakeWorker)
+			savedWorker.GardenAddrReturns(&address)
+			savedWorker.ExpiresAtReturns(time.Now().Add(123 * time.Minute))
+			savedWorker.StateReturns(db.WorkerStateRunning)
 
-			fakeDB.GetWorkerReturns(&savedWorker, true, nil)
+			fakeDB.GetWorkerReturns(savedWorker, true, nil)
 		})
 
 		It("updates cached request host on subsequent call", func() {
@@ -108,32 +109,18 @@ var _ = Describe("GardenRoundTripper #RoundTrip", func() {
 			})
 		})
 
-		Context("when the worker in the DB is stalled", func() {
+		Context("when the worker is in the DB and the garden addr is empty", func() {
 			BeforeEach(func() {
-				fakeDB.GetWorkerReturns(&dbng.Worker{
-					State: dbng.WorkerStateStalled,
-				}, true, nil)
+				runningWorker := new(dbfakes.FakeWorker)
+				runningWorker.StateReturns(db.WorkerStateStalled)
+				runningWorker.GardenAddrReturns(nil)
+
+				fakeDB.GetWorkerReturns(runningWorker, true, nil)
 			})
 
 			It("throws a descriptive error", func() {
 				_, err := roundTripper.RoundTrip(&request)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(MatchRegexp("worker .* has not checked in recently$"))
-			})
-		})
-
-		Context("when the worker in the DB is not stalled and addr is empty", func() {
-			BeforeEach(func() {
-				fakeDB.GetWorkerReturns(&dbng.Worker{
-					State:      dbng.WorkerStateRunning,
-					GardenAddr: nil,
-				}, true, nil)
-			})
-
-			It("throws a descriptive error", func() {
-				_, err := roundTripper.RoundTrip(&request)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(MatchRegexp("worker .* address is missing$"))
+				Expect(err).To(MatchError("worker 'some-worker' is unreachable (state is 'stalled')"))
 			})
 		})
 
@@ -145,7 +132,7 @@ var _ = Describe("GardenRoundTripper #RoundTrip", func() {
 			It("throws an error", func() {
 				_, err := roundTripper.RoundTrip(&request)
 				Expect(err).To(HaveOccurred())
-				Expect(err).To(Equal(transport.ErrMissingWorker{WorkerName: "some-worker"}))
+				Expect(err).To(Equal(transport.WorkerMissingError{WorkerName: "some-worker"}))
 			})
 		})
 	})

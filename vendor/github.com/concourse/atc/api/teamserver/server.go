@@ -5,28 +5,17 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-//go:generate counterfeiter . TeamsDB
-
-type TeamsDB interface {
-	GetTeams() ([]db.SavedTeam, error)
-	CreateTeam(data db.Team) (db.SavedTeam, error)
-	DeleteTeamByName(teamName string) error
-}
-
 type Server struct {
-	logger        lager.Logger
-	teamDBFactory db.TeamDBFactory
-	teamsDB       TeamsDB
+	logger      lager.Logger
+	teamFactory db.TeamFactory
 }
 
 func NewServer(
 	logger lager.Logger,
-	teamDBFactory db.TeamDBFactory,
-	teamsDB TeamsDB,
+	teamFactory db.TeamFactory,
 ) *Server {
 	return &Server{
-		logger:        logger,
-		teamDBFactory: teamDBFactory,
-		teamsDB:       teamsDB,
+		logger:      logger,
+		teamFactory: teamFactory,
 	}
 }

@@ -15,14 +15,12 @@ import (
 )
 
 var _ = Describe("Versions API", func() {
-	var pipelineDB *dbfakes.FakePipelineDB
-	var expectedSavedPipeline db.SavedPipeline
+	var fakePipeline *dbfakes.FakePipeline
 
 	BeforeEach(func() {
-		pipelineDB = new(dbfakes.FakePipelineDB)
-		pipelineDBFactory.BuildReturns(pipelineDB)
-		expectedSavedPipeline = db.SavedPipeline{}
-		teamDB.GetPipelineByNameReturns(expectedSavedPipeline, true, nil)
+		fakePipeline = new(dbfakes.FakePipeline)
+		dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
+		dbTeam.PipelineReturns(fakePipeline, true, nil)
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", func() {
@@ -45,13 +43,13 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 				userContextReader.GetTeamReturns("", false, false)
 			})
 
 			Context("and the pipeline is private", func() {
 				BeforeEach(func() {
-					pipelineDB.IsPublicReturns(false)
+					fakePipeline.PublicReturns(false)
 				})
 
 				It("returns 401", func() {
@@ -61,8 +59,8 @@ var _ = Describe("Versions API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					pipelineDB.IsPublicReturns(true)
-					pipelineDB.GetResourceVersionsReturns([]db.SavedVersionedResource{}, db.Pagination{}, true, nil)
+					fakePipeline.PublicReturns(true)
+					fakePipeline.GetResourceVersionsReturns([]db.SavedVersionedResource{}, db.Pagination{}, true, nil)
 				})
 
 				It("returns 200 OK", func() {
@@ -73,15 +71,15 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
 			})
 
 			Context("when no params are passed", func() {
 				It("does not set defaults for since and until", func() {
-					Expect(pipelineDB.GetResourceVersionsCallCount()).To(Equal(1))
+					Expect(fakePipeline.GetResourceVersionsCallCount()).To(Equal(1))
 
-					resourceName, page := pipelineDB.GetResourceVersionsArgsForCall(0)
+					resourceName, page := fakePipeline.GetResourceVersionsArgsForCall(0)
 					Expect(resourceName).To(Equal("some-resource"))
 					Expect(page).To(Equal(db.Page{
 						Since: 0,
@@ -99,9 +97,9 @@ var _ = Describe("Versions API", func() {
 				})
 
 				It("passes them through", func() {
-					Expect(pipelineDB.GetResourceVersionsCallCount()).To(Equal(1))
+					Expect(fakePipeline.GetResourceVersionsCallCount()).To(Equal(1))
 
-					resourceName, page := pipelineDB.GetResourceVersionsArgsForCall(0)
+					resourceName, page := fakePipeline.GetResourceVersionsArgsForCall(0)
 					Expect(resourceName).To(Equal("some-resource"))
 					Expect(page).To(Equal(db.Page{
 						Since: 2,
@@ -125,16 +123,15 @@ var _ = Describe("Versions API", func() {
 							VersionedResource: db.VersionedResource{
 								Resource: "some-resource",
 								Type:     "some-type",
-								Version: db.Version{
+								Version: db.ResourceVersion{
 									"some": "version",
 								},
-								Metadata: []db.MetadataField{
+								Metadata: []db.ResourceMetadataField{
 									{
 										Name:  "some",
 										Value: "metadata",
 									},
 								},
-								PipelineID: 42,
 							},
 						},
 						{
@@ -143,21 +140,20 @@ var _ = Describe("Versions API", func() {
 							VersionedResource: db.VersionedResource{
 								Resource: "some-resource",
 								Type:     "some-type",
-								Version: db.Version{
+								Version: db.ResourceVersion{
 									"some": "version",
 								},
-								Metadata: []db.MetadataField{
+								Metadata: []db.ResourceMetadataField{
 									{
 										Name:  "some",
 										Value: "metadata",
 									},
 								},
-								PipelineID: 42,
 							},
 						},
 					}
 
-					pipelineDB.GetResourceVersionsReturns(returnedVersions, db.Pagination{}, true, nil)
+					fakePipeline.GetResourceVersionsReturns(returnedVersions, db.Pagination{}, true, nil)
 				})
 
 				It("returns 200 OK", func() {
@@ -176,7 +172,6 @@ var _ = Describe("Versions API", func() {
 					{
 						"id": 4,
 						"enabled": true,
-						"pipeline_id": 42,
 						"resource": "some-resource",
 						"type": "some-type",
 						"version": {"some":"version"},
@@ -190,7 +185,6 @@ var _ = Describe("Versions API", func() {
 					{
 						"id":2,
 						"enabled": false,
-						"pipeline_id": 42,
 						"resource": "some-resource",
 						"type": "some-type",
 						"version": {"some":"version"},
@@ -206,8 +200,8 @@ var _ = Describe("Versions API", func() {
 
 				Context("when next/previous pages are available", func() {
 					BeforeEach(func() {
-						pipelineDB.GetPipelineNameReturns("some-pipeline")
-						pipelineDB.GetResourceVersionsReturns(returnedVersions, db.Pagination{
+						fakePipeline.NameReturns("some-pipeline")
+						fakePipeline.GetResourceVersionsReturns(returnedVersions, db.Pagination{
 							Previous: &db.Page{Until: 4, Limit: 2},
 							Next:     &db.Page{Since: 2, Limit: 2},
 						}, true, nil)
@@ -224,7 +218,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the versions can't be found", func() {
 				BeforeEach(func() {
-					pipelineDB.GetResourceVersionsReturns(nil, db.Pagination{}, false, nil)
+					fakePipeline.GetResourceVersionsReturns(nil, db.Pagination{}, false, nil)
 				})
 
 				It("returns 404 not found", func() {
@@ -234,7 +228,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when getting the versions fails", func() {
 				BeforeEach(func() {
-					pipelineDB.GetResourceVersionsReturns(nil, db.Pagination{}, false, errors.New("oh no!"))
+					fakePipeline.GetResourceVersionsReturns(nil, db.Pagination{}, false, errors.New("oh no!"))
 				})
 
 				It("returns 500 Internal Server Error", func() {
@@ -260,24 +254,17 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
-			})
-
-			It("injects the proper pipelineDB", func() {
-				Expect(teamDB.GetPipelineByNameArgsForCall(0)).To(Equal("a-pipeline"))
-				Expect(pipelineDBFactory.BuildCallCount()).To(Equal(1))
-				actualSavedPipeline := pipelineDBFactory.BuildArgsForCall(0)
-				Expect(actualSavedPipeline).To(Equal(expectedSavedPipeline))
 			})
 
 			Context("when enabling the resource succeeds", func() {
 				BeforeEach(func() {
-					pipelineDB.EnableVersionedResourceReturns(nil)
+					fakePipeline.EnableVersionedResourceReturns(nil)
 				})
 
 				It("enabled the right versioned resource", func() {
-					Expect(pipelineDB.EnableVersionedResourceArgsForCall(0)).To(Equal(42))
+					Expect(fakePipeline.EnableVersionedResourceArgsForCall(0)).To(Equal(42))
 				})
 
 				It("returns 200", func() {
@@ -287,7 +274,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when enabling the resource fails", func() {
 				BeforeEach(func() {
-					pipelineDB.EnableVersionedResourceReturns(errors.New("welp"))
+					fakePipeline.EnableVersionedResourceReturns(errors.New("welp"))
 				})
 
 				It("returns 500", func() {
@@ -298,7 +285,7 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns Unauthorized", func() {
@@ -322,25 +309,17 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
-			})
-
-			It("injects the proper pipelineDB", func() {
-				Expect(teamDB.GetPipelineByNameCallCount()).To(Equal(1))
-				Expect(teamDB.GetPipelineByNameArgsForCall(0)).To(Equal("a-pipeline"))
-				Expect(pipelineDBFactory.BuildCallCount()).To(Equal(1))
-				actualSavedPipeline := pipelineDBFactory.BuildArgsForCall(0)
-				Expect(actualSavedPipeline).To(Equal(expectedSavedPipeline))
 			})
 
 			Context("when enabling the resource succeeds", func() {
 				BeforeEach(func() {
-					pipelineDB.DisableVersionedResourceReturns(nil)
+					fakePipeline.DisableVersionedResourceReturns(nil)
 				})
 
 				It("disabled the right versioned resource", func() {
-					Expect(pipelineDB.DisableVersionedResourceArgsForCall(0)).To(Equal(42))
+					Expect(fakePipeline.DisableVersionedResourceArgsForCall(0)).To(Equal(42))
 				})
 
 				It("returns 200", func() {
@@ -350,7 +329,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when enabling the resource fails", func() {
 				BeforeEach(func() {
-					pipelineDB.DisableVersionedResourceReturns(errors.New("welp"))
+					fakePipeline.DisableVersionedResourceReturns(errors.New("welp"))
 				})
 
 				It("returns 500", func() {
@@ -361,7 +340,7 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns Unauthorized", func() {
@@ -390,13 +369,13 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 				userContextReader.GetTeamReturns("", false, false)
 			})
 
 			Context("and the pipeline is private", func() {
 				BeforeEach(func() {
-					pipelineDB.IsPublicReturns(false)
+					fakePipeline.PublicReturns(false)
 				})
 
 				It("returns 401", func() {
@@ -406,7 +385,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					pipelineDB.IsPublicReturns(true)
+					fakePipeline.PublicReturns(true)
 				})
 
 				It("returns 200 OK", func() {
@@ -417,13 +396,13 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
 			})
 
 			It("looks up the given version ID", func() {
-				Expect(pipelineDB.GetBuildsWithVersionAsInputCallCount()).To(Equal(1))
-				Expect(pipelineDB.GetBuildsWithVersionAsInputArgsForCall(0)).To(Equal(123))
+				Expect(fakePipeline.GetBuildsWithVersionAsInputCallCount()).To(Equal(1))
+				Expect(fakePipeline.GetBuildsWithVersionAsInputArgsForCall(0)).To(Equal(123))
 			})
 
 			Context("when getting the builds succeeds", func() {
@@ -434,7 +413,7 @@ var _ = Describe("Versions API", func() {
 					build1.JobNameReturns("some-job")
 					build1.PipelineNameReturns("a-pipeline")
 					build1.TeamNameReturns("a-team")
-					build1.StatusReturns(db.StatusSucceeded)
+					build1.StatusReturns(db.BuildStatusSucceeded)
 					build1.StartTimeReturns(time.Unix(1, 0))
 					build1.EndTimeReturns(time.Unix(100, 0))
 
@@ -444,11 +423,11 @@ var _ = Describe("Versions API", func() {
 					build2.JobNameReturns("some-job")
 					build2.PipelineNameReturns("a-pipeline")
 					build2.TeamNameReturns("a-team")
-					build2.StatusReturns(db.StatusSucceeded)
+					build2.StatusReturns(db.BuildStatusSucceeded)
 					build2.StartTimeReturns(time.Unix(200, 0))
 					build2.EndTimeReturns(time.Unix(300, 0))
 
-					pipelineDB.GetBuildsWithVersionAsInputReturns([]db.Build{build1, build2}, nil)
+					fakePipeline.GetBuildsWithVersionAsInputReturns([]db.Build{build1, build2}, nil)
 				})
 
 				It("returns 200 OK", func() {
@@ -507,7 +486,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the call to get builds returns an error", func() {
 				BeforeEach(func() {
-					pipelineDB.GetBuildsWithVersionAsInputReturns(nil, errors.New("NOPE"))
+					fakePipeline.GetBuildsWithVersionAsInputReturns(nil, errors.New("NOPE"))
 				})
 
 				It("returns a 500 internal server error", func() {
@@ -537,13 +516,13 @@ var _ = Describe("Versions API", func() {
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 				userContextReader.GetTeamReturns("", false, false)
 			})
 
 			Context("and the pipeline is private", func() {
 				BeforeEach(func() {
-					pipelineDB.IsPublicReturns(false)
+					fakePipeline.PublicReturns(false)
 				})
 
 				It("returns 401", func() {
@@ -553,7 +532,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
-					pipelineDB.IsPublicReturns(true)
+					fakePipeline.PublicReturns(true)
 				})
 
 				It("returns 200 OK", func() {
@@ -564,13 +543,13 @@ var _ = Describe("Versions API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
 			})
 
 			It("looks up the given version ID", func() {
-				Expect(pipelineDB.GetBuildsWithVersionAsOutputCallCount()).To(Equal(1))
-				Expect(pipelineDB.GetBuildsWithVersionAsOutputArgsForCall(0)).To(Equal(123))
+				Expect(fakePipeline.GetBuildsWithVersionAsOutputCallCount()).To(Equal(1))
+				Expect(fakePipeline.GetBuildsWithVersionAsOutputArgsForCall(0)).To(Equal(123))
 			})
 
 			Context("when getting the builds succeeds", func() {
@@ -581,7 +560,7 @@ var _ = Describe("Versions API", func() {
 					build1.JobNameReturns("some-job")
 					build1.PipelineNameReturns("a-pipeline")
 					build1.TeamNameReturns("a-team")
-					build1.StatusReturns(db.StatusSucceeded)
+					build1.StatusReturns(db.BuildStatusSucceeded)
 					build1.StartTimeReturns(time.Unix(1, 0))
 					build1.EndTimeReturns(time.Unix(100, 0))
 
@@ -591,11 +570,11 @@ var _ = Describe("Versions API", func() {
 					build2.JobNameReturns("some-job")
 					build2.PipelineNameReturns("a-pipeline")
 					build2.TeamNameReturns("a-team")
-					build2.StatusReturns(db.StatusSucceeded)
+					build2.StatusReturns(db.BuildStatusSucceeded)
 					build2.StartTimeReturns(time.Unix(200, 0))
 					build2.EndTimeReturns(time.Unix(300, 0))
 
-					pipelineDB.GetBuildsWithVersionAsOutputReturns([]db.Build{build1, build2}, nil)
+					fakePipeline.GetBuildsWithVersionAsOutputReturns([]db.Build{build1, build2}, nil)
 				})
 
 				It("returns 200 OK", func() {
@@ -654,7 +633,7 @@ var _ = Describe("Versions API", func() {
 
 			Context("when the call to get builds returns an error", func() {
 				BeforeEach(func() {
-					pipelineDB.GetBuildsWithVersionAsOutputReturns(nil, errors.New("NOPE"))
+					fakePipeline.GetBuildsWithVersionAsOutputReturns(nil, errors.New("NOPE"))
 				})
 
 				It("returns a 500 internal server error", func() {

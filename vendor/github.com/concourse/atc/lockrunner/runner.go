@@ -6,15 +6,9 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager"
-	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/lock"
 	"github.com/tedsuo/ifrit"
 )
-
-//go:generate counterfeiter . RunnerDB
-
-type RunnerDB interface {
-	GetTaskLock(logger lager.Logger, lockName string) (db.Lock, bool, error)
-}
 
 //go:generate counterfeiter . Task
 
@@ -26,12 +20,11 @@ func NewRunner(
 	logger lager.Logger,
 	task Task,
 	taskName string,
-	db RunnerDB,
+	lockFactory lock.LockFactory,
 	clock clock.Clock,
 	interval time.Duration,
 ) ifrit.Runner {
 	return ifrit.RunFunc(func(signals <-chan os.Signal, ready chan<- struct{}) error {
-
 		close(ready)
 
 		ticker := clock.NewTicker(interval)
@@ -41,9 +34,9 @@ func NewRunner(
 			select {
 			case <-ticker.C():
 				lockLogger := logger.Session("lock-task", lager.Data{"task-name": taskName})
-				lockLogger.Info("tick")
+				lockLogger.Debug("tick")
 
-				lock, acquired, err := db.GetTaskLock(lockLogger, taskName)
+				lock, acquired, err := lockFactory.Acquire(lockLogger, lock.NewTaskLockID(taskName))
 
 				if err != nil {
 					lockLogger.Error("failed-to-get-lock", err)
@@ -55,7 +48,8 @@ func NewRunner(
 					break
 				}
 
-				lockLogger.Info("run-task", lager.Data{"task-name": taskName})
+				lockLogger.Debug("run-task", lager.Data{"task-name": taskName})
+
 				err = task.Run()
 				if err != nil {
 					lockLogger.Error("failed-to-run-task", err, lager.Data{"task-name": taskName})

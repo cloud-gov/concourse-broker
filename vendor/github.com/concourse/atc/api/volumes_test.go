@@ -4,15 +4,23 @@ import (
 	"errors"
 	"io/ioutil"
 	"net/http"
-	"time"
 
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Volumes API", func() {
+
+	var fakeWorker *dbfakes.FakeWorker
+
+	BeforeEach(func() {
+		fakeWorker = new(dbfakes.FakeWorker)
+		fakeWorker.NameReturns("some-worker")
+	})
+
 	Describe("GET /api/v1/volumes", func() {
 		var response *http.Response
 
@@ -25,7 +33,7 @@ var _ = Describe("Volumes API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -35,140 +43,191 @@ var _ = Describe("Volumes API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("some-team", true, true)
 			})
 
-			Context("when getting all volumes succeeds", func() {
+			Context("when identifying the team succeeds", func() {
 				BeforeEach(func() {
-					someVersion := "some-version"
-					teamDB.GetVolumesReturns([]db.SavedVolume{
-						{
-							ID:        3,
-							ExpiresIn: 2 * time.Minute,
-							Volume: db.Volume{
-								WorkerName: "some-worker",
-								TeamID:     1,
-								TTL:        10 * time.Minute,
-								Handle:     "some-resource-cache-handle",
-								Identifier: db.VolumeIdentifier{
-									ResourceCache: &db.ResourceCacheIdentifier{
-										ResourceVersion: atc.Version{"a": "b", "c": "d"},
-										ResourceHash:    "some-hash",
-									},
-								},
-								SizeInBytes: 1024,
-							},
-						},
-						{
-							ID:        1,
-							ExpiresIn: 23 * time.Hour,
-							Volume: db.Volume{
-								WorkerName: "some-worker",
-								TeamID:     1,
-								TTL:        24 * time.Hour,
-								Handle:     "some-import-handle",
-								Identifier: db.VolumeIdentifier{
-									Import: &db.ImportIdentifier{
-										WorkerName: "some-worker",
-										Path:       "some-path",
-										Version:    &someVersion,
-									},
-								},
-								SizeInBytes: 2048,
-							},
-						},
-						{
-							ID:        1,
-							ExpiresIn: 23 * time.Hour,
-							Volume: db.Volume{
-								WorkerName: "some-other-worker",
-								TeamID:     1,
-								TTL:        24 * time.Hour,
-								Handle:     "some-output-handle",
-								Identifier: db.VolumeIdentifier{
-									Output: &db.OutputIdentifier{
-										Name: "some-output",
-									},
-								},
-								SizeInBytes: 4096,
-							},
-						},
-						{
-							ID:        1,
-							ExpiresIn: time.Duration(0),
-							Volume: db.Volume{
-								WorkerName: "some-worker",
-								TeamID:     1,
-								TTL:        time.Duration(0),
-								Handle:     "some-cow-handle",
-								Identifier: db.VolumeIdentifier{
-									COW: &db.COWIdentifier{
-										ParentVolumeHandle: "some-parent-volume-handle",
-									},
-								},
-								SizeInBytes: 8192,
-							},
-						},
-					}, nil)
+					dbTeam.IDReturns(1)
 				})
 
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
+				It("asks the factory for the volumes", func() {
+					Expect(fakeVolumeFactory.GetTeamVolumesCallCount()).To(Equal(1))
 				})
 
-				It("returns all volumes", func() {
-					body, err := ioutil.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
+				Context("when getting all volumes succeeds", func() {
+					BeforeEach(func() {
+						someOtherFakeWorker := new(dbfakes.FakeWorker)
+						someOtherFakeWorker.NameReturns("some-other-worker")
 
-					Expect(body).To(MatchJSON(`[
-						{
-							"id": "some-resource-cache-handle",
-							"ttl_in_seconds": 120,
-							"validity_in_seconds": 600,
-							"worker_name": "some-worker",
-							"type": "cache",
-							"identifier": "a:b,c:d",
-							"size_in_bytes": 1024
-						},
-						{
-							"id": "some-import-handle",
-							"ttl_in_seconds": 82800,
-							"validity_in_seconds": 86400,
-							"worker_name": "some-worker",
-							"type": "import",
-							"identifier": "some-path@some-version",
-							"size_in_bytes": 2048
-						},
-						{
-							"id": "some-output-handle",
-							"ttl_in_seconds": 82800,
-							"validity_in_seconds": 86400,
-							"worker_name": "some-other-worker",
-							"type": "output",
-							"identifier": "some-output",
-							"size_in_bytes": 4096
-						},
-						{
-							"id": "some-cow-handle",
-							"ttl_in_seconds": 0,
-							"validity_in_seconds": 0,
-							"worker_name": "some-worker",
-							"type": "copy",
-							"identifier": "some-parent-volume-handle",
-							"size_in_bytes": 8192
+						fakeVolumeFactory.GetTeamVolumesStub = func(teamID int) ([]db.CreatedVolume, error) {
+							if teamID != 1 {
+								return []db.CreatedVolume{}, nil
+							}
+
+							volume1 := new(dbfakes.FakeCreatedVolume)
+							volume1.HandleReturns("some-resource-cache-handle")
+							volume1.WorkerNameReturns(fakeWorker.Name())
+							volume1.TypeReturns(db.VolumeTypeResource)
+							volume1.SizeInBytesReturns(1024)
+							volume1.ResourceTypeReturns(&db.VolumeResourceType{
+								ResourceType: &db.VolumeResourceType{
+									WorkerBaseResourceType: &db.UsedWorkerBaseResourceType{
+										Name:    "some-base-resource-type",
+										Version: "some-base-version",
+									},
+									Version: atc.Version{"custom": "version"},
+								},
+								Version: atc.Version{"some": "version"},
+							}, nil)
+							volume2 := new(dbfakes.FakeCreatedVolume)
+							volume2.HandleReturns("some-import-handle")
+							volume2.WorkerNameReturns(fakeWorker.Name())
+							volume2.SizeInBytesReturns(2048)
+							volume2.TypeReturns(db.VolumeTypeResourceType)
+							volume2.BaseResourceTypeReturns(&db.UsedWorkerBaseResourceType{
+								Name:    "some-base-resource-type",
+								Version: "some-base-version",
+							}, nil)
+							volume3 := new(dbfakes.FakeCreatedVolume)
+							volume3.HandleReturns("some-output-handle")
+							volume3.WorkerNameReturns(someOtherFakeWorker.Name())
+							volume3.ContainerHandleReturns("some-container-handle")
+							volume3.PathReturns("some-path")
+							volume3.ParentHandleReturns("some-parent-handle")
+							volume3.SizeInBytesReturns(4096)
+							volume3.TypeReturns(db.VolumeTypeContainer)
+							volume4 := new(dbfakes.FakeCreatedVolume)
+							volume4.HandleReturns("some-cow-handle")
+							volume4.WorkerNameReturns(fakeWorker.Name())
+							volume4.ContainerHandleReturns("some-container-handle")
+							volume4.PathReturns("some-path")
+							volume4.SizeInBytesReturns(8192)
+							volume4.TypeReturns(db.VolumeTypeContainer)
+							volume5 := new(dbfakes.FakeCreatedVolume)
+							volume5.HandleReturns("some-task-cache-handle")
+							volume5.WorkerNameReturns(fakeWorker.Name())
+							volume5.SizeInBytesReturns(12345)
+							volume5.TypeReturns(db.VolumeTypeTaskCache)
+							volume5.TaskIdentifierReturns("some-pipeline", "some-job", "some-task", nil)
+
+							return []db.CreatedVolume{
+								volume1,
+								volume2,
+								volume3,
+								volume4,
+								volume5,
+							}, nil
 						}
-					]`))
-				})
-			})
+					})
 
-			Context("when getting all builds fails", func() {
-				BeforeEach(func() {
-					teamDB.GetVolumesReturns(nil, errors.New("oh no!"))
+					It("returns 200 OK", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+					})
+
+					It("returns all volumes", func() {
+						body, err := ioutil.ReadAll(response.Body)
+						Expect(err).NotTo(HaveOccurred())
+
+						Expect(body).To(MatchJSON(`[
+							{
+								"id": "some-resource-cache-handle",
+								"worker_name": "some-worker",
+								"type": "resource",
+								"size_in_bytes": 1024,
+								"container_handle": "",
+								"path": "",
+								"parent_handle": "",
+								"resource_type": {
+									"resource_type": {
+									  "resource_type": null,
+										"base_resource_type": {
+											"name": "some-base-resource-type",
+											"version": "some-base-version"
+										},
+										"version": {"custom": "version"}
+									},
+									"base_resource_type": null,
+									"version": {"some": "version"}
+								},
+								"base_resource_type": null,
+								"pipeline_name": "",
+								"job_name": "",
+								"step_name": ""
+							},
+							{
+								"id": "some-import-handle",
+								"worker_name": "some-worker",
+								"type": "resource-type",
+								"size_in_bytes": 2048,
+								"container_handle": "",
+								"path": "",
+								"parent_handle": "",
+								"resource_type": null,
+								"base_resource_type": {
+									"name": "some-base-resource-type",
+									"version": "some-base-version"
+								},
+								"pipeline_name": "",
+								"job_name": "",
+								"step_name": ""
+							},
+							{
+								"id": "some-output-handle",
+								"worker_name": "some-other-worker",
+								"type": "container",
+								"size_in_bytes": 4096,
+								"container_handle": "some-container-handle",
+								"path": "some-path",
+								"parent_handle": "some-parent-handle",
+								"resource_type": null,
+								"base_resource_type": null,
+								"pipeline_name": "",
+								"job_name": "",
+								"step_name": ""
+							},
+							{
+								"id": "some-cow-handle",
+								"worker_name": "some-worker",
+								"type": "container",
+								"size_in_bytes": 8192,
+								"container_handle": "some-container-handle",
+								"parent_handle": "",
+								"path": "some-path",
+								"resource_type": null,
+								"base_resource_type": null,
+								"pipeline_name": "",
+								"job_name": "",
+								"step_name": ""
+							},
+							{
+								"id": "some-task-cache-handle",
+								"worker_name": "some-worker",
+								"type": "task-cache",
+								"size_in_bytes": 12345,
+								"container_handle": "",
+								"parent_handle": "",
+								"path": "",
+								"resource_type": null,
+								"base_resource_type": null,
+								"pipeline_name": "some-pipeline",
+								"job_name": "some-job",
+								"step_name": "some-task"
+							}
+						]`,
+						))
+					})
 				})
 
-				It("returns 500 Internal Server Error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				Context("when getting all volumes fails", func() {
+					BeforeEach(func() {
+						fakeVolumeFactory.GetTeamVolumesReturns([]db.CreatedVolume{}, errors.New("oh no!"))
+					})
+
+					It("returns 500 Internal Server Error", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
 				})
 			})
 		})

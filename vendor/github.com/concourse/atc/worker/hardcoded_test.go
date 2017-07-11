@@ -14,15 +14,14 @@ import (
 	"code.cloudfoundry.org/lager/lagertest"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/worker"
-	"github.com/concourse/atc/worker/workerfakes"
 )
 
 var _ = Describe("Hardcoded", func() {
 	var (
 		logger           lager.Logger
-		workerDB         *workerfakes.FakeSaveWorkerDB
+		workerFactory    *dbfakes.FakeWorkerFactory
 		gardenAddr       string
 		baggageClaimAddr string
 		resourceTypes    []atc.WorkerResourceType
@@ -33,7 +32,7 @@ var _ = Describe("Hardcoded", func() {
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("hardcoded-worker")
-		workerDB = &workerfakes.FakeSaveWorkerDB{}
+		workerFactory = new(dbfakes.FakeWorkerFactory)
 		gardenAddr = "http://garden.example.com"
 		baggageClaimAddr = "http://volumes.example.com"
 		resourceTypes = []atc.WorkerResourceType{
@@ -47,7 +46,7 @@ var _ = Describe("Hardcoded", func() {
 
 	Describe("registering a single worker", func() {
 		JustBeforeEach(func() {
-			runner := worker.NewHardcoded(logger, workerDB, fakeClock, gardenAddr, baggageClaimAddr, resourceTypes)
+			runner := worker.NewHardcoded(logger, workerFactory, fakeClock, gardenAddr, baggageClaimAddr, resourceTypes)
 			process = ginkgomon.Invoke(runner)
 		})
 
@@ -56,7 +55,7 @@ var _ = Describe("Hardcoded", func() {
 		})
 
 		It("registers it and then keeps registering it on an interval", func() {
-			expectedWorkerInfo := db.WorkerInfo{
+			expectedWorker := atc.Worker{
 				Name:             gardenAddr,
 				GardenAddr:       gardenAddr,
 				BaggageclaimURL:  baggageClaimAddr,
@@ -67,21 +66,21 @@ var _ = Describe("Hardcoded", func() {
 			}
 			expectedTTL := 30 * time.Second
 
-			Eventually(workerDB.SaveWorkerCallCount()).Should(Equal(1))
-			workerInfo, ttl := workerDB.SaveWorkerArgsForCall(0)
-			Expect(workerInfo).To(Equal(expectedWorkerInfo))
+			Eventually(workerFactory.SaveWorkerCallCount()).Should(Equal(1))
+			workerInfo, ttl := workerFactory.SaveWorkerArgsForCall(0)
+			Expect(workerInfo).To(Equal(expectedWorker))
 			Expect(ttl).To(Equal(expectedTTL))
 
 			fakeClock.Increment(11 * time.Second)
 
-			Eventually(workerDB.SaveWorkerCallCount).Should(Equal(2))
-			workerInfo, ttl = workerDB.SaveWorkerArgsForCall(1)
-			Expect(workerInfo).To(Equal(expectedWorkerInfo))
+			Eventually(workerFactory.SaveWorkerCallCount).Should(Equal(2))
+			workerInfo, ttl = workerFactory.SaveWorkerArgsForCall(1)
+			Expect(workerInfo).To(Equal(expectedWorker))
 			Expect(ttl).To(Equal(expectedTTL))
 		})
 
 		It("can be interrupted", func() {
-			expectedWorkerInfo := db.WorkerInfo{
+			expectedWorker := atc.Worker{
 				Name:             gardenAddr,
 				GardenAddr:       gardenAddr,
 				BaggageclaimURL:  baggageClaimAddr,
@@ -92,16 +91,16 @@ var _ = Describe("Hardcoded", func() {
 			}
 			expectedTTL := 30 * time.Second
 
-			Eventually(workerDB.SaveWorkerCallCount()).Should(Equal(1))
-			workerInfo, ttl := workerDB.SaveWorkerArgsForCall(0)
-			Expect(workerInfo).To(Equal(expectedWorkerInfo))
+			Eventually(workerFactory.SaveWorkerCallCount()).Should(Equal(1))
+			workerInfo, ttl := workerFactory.SaveWorkerArgsForCall(0)
+			Expect(workerInfo).To(Equal(expectedWorker))
 			Expect(ttl).To(Equal(expectedTTL))
 
 			ginkgomon.Interrupt(process)
 
 			fakeClock.Increment(11 * time.Second)
 
-			Consistently(workerDB.SaveWorkerCallCount).Should(Equal(1))
+			Consistently(workerFactory.SaveWorkerCallCount).Should(Equal(1))
 		})
 	})
 
@@ -109,11 +108,11 @@ var _ = Describe("Hardcoded", func() {
 		disaster := errors.New("bad bad bad")
 
 		BeforeEach(func() {
-			workerDB.SaveWorkerReturns(db.SavedWorker{}, disaster)
+			workerFactory.SaveWorkerReturns(nil, disaster)
 		})
 
 		It("exits early", func() {
-			runner := worker.NewHardcoded(logger, workerDB, fakeClock, gardenAddr, baggageClaimAddr, resourceTypes)
+			runner := worker.NewHardcoded(logger, workerFactory, fakeClock, gardenAddr, baggageClaimAddr, resourceTypes)
 			process = ifrit.Invoke(runner)
 
 			Expect(<-process.Wait()).To(Equal(disaster))

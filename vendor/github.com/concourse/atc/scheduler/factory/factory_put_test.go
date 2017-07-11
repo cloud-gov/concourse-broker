@@ -9,12 +9,12 @@ import (
 )
 
 var _ = Describe("Factory Put", func() {
-	Describe("Put/DependentGet locations", func() {
+	Describe("Put/Get locations", func() {
 		var (
 			buildFactory factory.BuildFactory
 
 			resources           atc.ResourceConfigs
-			resourceTypes       atc.ResourceTypes
+			resourceTypes       atc.VersionedResourceTypes
 			input               atc.JobConfig
 			actualPlanFactory   atc.PlanFactory
 			expectedPlanFactory atc.PlanFactory
@@ -33,11 +33,14 @@ var _ = Describe("Factory Put", func() {
 				},
 			}
 
-			resourceTypes = atc.ResourceTypes{
+			resourceTypes = atc.VersionedResourceTypes{
 				{
-					Name:   "some-custom-resource",
-					Type:   "docker-image",
-					Source: atc.Source{"some": "custom-source"},
+					ResourceType: atc.ResourceType{
+						Name:   "some-custom-resource",
+						Type:   "docker-image",
+						Source: atc.Source{"some": "custom-source"},
+					},
+					Version: atc.Version{"some": "version"},
 				},
 			}
 		})
@@ -58,26 +61,27 @@ var _ = Describe("Factory Put", func() {
 				actual, err := buildFactory.Create(input, resources, resourceTypes, nil)
 				Expect(err).NotTo(HaveOccurred())
 
+				putPlan := expectedPlanFactory.NewPlan(atc.PutPlan{
+					Type:     "git",
+					Name:     "some-put",
+					Resource: "some-resource",
+					Source: atc.Source{
+						"uri": "git://some-resource",
+					},
+					VersionedResourceTypes: resourceTypes,
+				})
+
 				expected := expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
-					Step: expectedPlanFactory.NewPlan(atc.PutPlan{
-						Type:       "git",
-						Name:       "some-put",
-						Resource:   "some-resource",
-						PipelineID: 42,
+					Step: putPlan,
+					Next: expectedPlanFactory.NewPlan(atc.GetPlan{
+						Type:     "git",
+						Name:     "some-put",
+						Resource: "some-resource",
 						Source: atc.Source{
 							"uri": "git://some-resource",
 						},
-						ResourceTypes: resourceTypes,
-					}),
-					Next: expectedPlanFactory.NewPlan(atc.DependentGetPlan{
-						Type:       "git",
-						Name:       "some-put",
-						Resource:   "some-resource",
-						PipelineID: 42,
-						Source: atc.Source{
-							"uri": "git://some-resource",
-						},
-						ResourceTypes: resourceTypes,
+						VersionFrom:            &putPlan.ID,
+						VersionedResourceTypes: resourceTypes,
 					}),
 				})
 				Expect(actual).To(testhelpers.MatchPlan(expected))
@@ -103,12 +107,12 @@ var _ = Describe("Factory Put", func() {
 		})
 	})
 
-	Describe("Put/DependentGet build plan", func() {
+	Describe("Put/Get build plan", func() {
 		var (
 			buildFactory factory.BuildFactory
 
 			resources           atc.ResourceConfigs
-			resourceTypes       atc.ResourceTypes
+			resourceTypes       atc.VersionedResourceTypes
 			input               atc.JobConfig
 			actualPlanFactory   atc.PlanFactory
 			expectedPlanFactory atc.PlanFactory
@@ -127,11 +131,14 @@ var _ = Describe("Factory Put", func() {
 				},
 			}
 
-			resourceTypes = atc.ResourceTypes{
+			resourceTypes = atc.VersionedResourceTypes{
 				{
-					Name:   "some-custom-resource",
-					Type:   "docker-image",
-					Source: atc.Source{"some": "custom-source"},
+					ResourceType: atc.ResourceType{
+						Name:   "some-resource-type",
+						Type:   "some-underlying-type",
+						Source: atc.Source{"some": "source"},
+					},
+					Version: atc.Version{"some": "version"},
 				},
 			}
 		})
@@ -152,26 +159,26 @@ var _ = Describe("Factory Put", func() {
 				actual, err := buildFactory.Create(input, resources, resourceTypes, nil)
 				Expect(err).NotTo(HaveOccurred())
 
+				putPlan := expectedPlanFactory.NewPlan(atc.PutPlan{
+					Type:     "git",
+					Name:     "some-put",
+					Resource: "some-resource",
+					Source: atc.Source{
+						"uri": "git://some-resource",
+					},
+					VersionedResourceTypes: resourceTypes,
+				})
 				expected := expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
-					Step: expectedPlanFactory.NewPlan(atc.PutPlan{
-						Type:       "git",
-						Name:       "some-put",
-						Resource:   "some-resource",
-						PipelineID: 42,
+					Step: putPlan,
+					Next: expectedPlanFactory.NewPlan(atc.GetPlan{
+						Type:     "git",
+						Name:     "some-put",
+						Resource: "some-resource",
 						Source: atc.Source{
 							"uri": "git://some-resource",
 						},
-						ResourceTypes: resourceTypes,
-					}),
-					Next: expectedPlanFactory.NewPlan(atc.DependentGetPlan{
-						Type:       "git",
-						Name:       "some-put",
-						Resource:   "some-resource",
-						PipelineID: 42,
-						Source: atc.Source{
-							"uri": "git://some-resource",
-						},
-						ResourceTypes: resourceTypes,
+						VersionFrom:            &putPlan.ID,
+						VersionedResourceTypes: resourceTypes,
 					}),
 				})
 				Expect(actual).To(testhelpers.MatchPlan(expected))
@@ -196,33 +203,33 @@ var _ = Describe("Factory Put", func() {
 				actual, err := buildFactory.Create(input, resources, resourceTypes, nil)
 				Expect(err).NotTo(HaveOccurred())
 
+				putPlan := expectedPlanFactory.NewPlan(atc.PutPlan{
+					Type:     "git",
+					Name:     "some-resource",
+					Resource: "some-resource",
+					Source: atc.Source{
+						"uri": "git://some-resource",
+					},
+					VersionedResourceTypes: resourceTypes,
+				})
+
 				expected := expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
 					Step: expectedPlanFactory.NewPlan(atc.TaskPlan{
-						Name:          "some-task",
-						PipelineID:    42,
-						ResourceTypes: resourceTypes,
+						Name: "some-task",
+						VersionedResourceTypes: resourceTypes,
 					}),
 
 					Next: expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
-						Step: expectedPlanFactory.NewPlan(atc.PutPlan{
-							Type:       "git",
-							Name:       "some-resource",
-							Resource:   "some-resource",
-							PipelineID: 42,
+						Step: putPlan,
+						Next: expectedPlanFactory.NewPlan(atc.GetPlan{
+							Type:     "git",
+							Name:     "some-resource",
+							Resource: "some-resource",
 							Source: atc.Source{
 								"uri": "git://some-resource",
 							},
-							ResourceTypes: resourceTypes,
-						}),
-						Next: expectedPlanFactory.NewPlan(atc.DependentGetPlan{
-							Type:       "git",
-							Name:       "some-resource",
-							Resource:   "some-resource",
-							PipelineID: 42,
-							Source: atc.Source{
-								"uri": "git://some-resource",
-							},
-							ResourceTypes: resourceTypes,
+							VersionFrom:            &putPlan.ID,
+							VersionedResourceTypes: resourceTypes,
 						}),
 					}),
 				})
@@ -252,32 +259,32 @@ var _ = Describe("Factory Put", func() {
 				actual, err := buildFactory.Create(input, resources, resourceTypes, nil)
 				Expect(err).NotTo(HaveOccurred())
 
+				putPlan := expectedPlanFactory.NewPlan(atc.PutPlan{
+					Type:     "git",
+					Name:     "some-resource",
+					Resource: "some-resource",
+					Source: atc.Source{
+						"uri": "git://some-resource",
+					},
+					VersionedResourceTypes: resourceTypes,
+				})
+
 				expected := expectedPlanFactory.NewPlan(atc.AggregatePlan{
 					expectedPlanFactory.NewPlan(atc.TaskPlan{
-						Name:          "some thing",
-						PipelineID:    42,
-						ResourceTypes: resourceTypes,
+						Name: "some thing",
+						VersionedResourceTypes: resourceTypes,
 					}),
 					expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
-						Step: expectedPlanFactory.NewPlan(atc.PutPlan{
-							Type:       "git",
-							Name:       "some-resource",
-							Resource:   "some-resource",
-							PipelineID: 42,
+						Step: putPlan,
+						Next: expectedPlanFactory.NewPlan(atc.GetPlan{
+							Type:     "git",
+							Name:     "some-resource",
+							Resource: "some-resource",
 							Source: atc.Source{
 								"uri": "git://some-resource",
 							},
-							ResourceTypes: resourceTypes,
-						}),
-						Next: expectedPlanFactory.NewPlan(atc.DependentGetPlan{
-							Type:       "git",
-							Name:       "some-resource",
-							Resource:   "some-resource",
-							PipelineID: 42,
-							Source: atc.Source{
-								"uri": "git://some-resource",
-							},
-							ResourceTypes: resourceTypes,
+							VersionFrom:            &putPlan.ID,
+							VersionedResourceTypes: resourceTypes,
 						}),
 					}),
 				})
@@ -304,32 +311,32 @@ var _ = Describe("Factory Put", func() {
 				actual, err := buildFactory.Create(input, resources, resourceTypes, nil)
 				Expect(err).NotTo(HaveOccurred())
 
+				putPlan := expectedPlanFactory.NewPlan(atc.PutPlan{
+					Type:     "git",
+					Name:     "money",
+					Resource: "some-resource",
+					Source: atc.Source{
+						"uri": "git://some-resource",
+					},
+					VersionedResourceTypes: resourceTypes,
+				})
+
 				expected := expectedPlanFactory.NewPlan(atc.DoPlan{
 					expectedPlanFactory.NewPlan(atc.TaskPlan{
-						Name:          "some-task",
-						PipelineID:    42,
-						ResourceTypes: resourceTypes,
+						Name: "some-task",
+						VersionedResourceTypes: resourceTypes,
 					}),
 					expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
-						Step: expectedPlanFactory.NewPlan(atc.PutPlan{
-							Type:       "git",
-							Name:       "money",
-							Resource:   "some-resource",
-							PipelineID: 42,
+						Step: putPlan,
+						Next: expectedPlanFactory.NewPlan(atc.GetPlan{
+							Type:     "git",
+							Name:     "money",
+							Resource: "some-resource",
 							Source: atc.Source{
 								"uri": "git://some-resource",
 							},
-							ResourceTypes: resourceTypes,
-						}),
-						Next: expectedPlanFactory.NewPlan(atc.DependentGetPlan{
-							Type:       "git",
-							Name:       "money",
-							Resource:   "some-resource",
-							PipelineID: 42,
-							Source: atc.Source{
-								"uri": "git://some-resource",
-							},
-							ResourceTypes: resourceTypes,
+							VersionFrom:            &putPlan.ID,
+							VersionedResourceTypes: resourceTypes,
 						}),
 					}),
 				})
@@ -356,39 +363,38 @@ var _ = Describe("Factory Put", func() {
 			})
 
 			It("returns the correct plan", func() {
+				putPlan := expectedPlanFactory.NewPlan(atc.PutPlan{
+					Type:     "git",
+					Name:     "some-resource",
+					Resource: "some-resource",
+					Source: atc.Source{
+						"uri": "git://some-resource",
+					},
+					Params:                 nil,
+					VersionedResourceTypes: resourceTypes,
+				})
+
 				expectedPlan := expectedPlanFactory.NewPlan(atc.DoPlan{
 					expectedPlanFactory.NewPlan(atc.TaskPlan{
-						Name:          "those who resist our will",
-						PipelineID:    42,
-						ResourceTypes: resourceTypes,
+						Name: "those who resist our will",
+						VersionedResourceTypes: resourceTypes,
 					}),
 					expectedPlanFactory.NewPlan(atc.OnSuccessPlan{
-						Step: expectedPlanFactory.NewPlan(atc.PutPlan{
-							Type:       "git",
-							Name:       "some-resource",
-							Resource:   "some-resource",
-							PipelineID: 42,
+						Step: putPlan,
+						Next: expectedPlanFactory.NewPlan(atc.GetPlan{
+							Type:     "git",
+							Name:     "some-resource",
+							Resource: "some-resource",
 							Source: atc.Source{
 								"uri": "git://some-resource",
 							},
-							Params:        nil,
-							ResourceTypes: resourceTypes,
-						}),
-						Next: expectedPlanFactory.NewPlan(atc.DependentGetPlan{
-							Type:       "git",
-							Name:       "some-resource",
-							Resource:   "some-resource",
-							PipelineID: 42,
-							Source: atc.Source{
-								"uri": "git://some-resource",
-							},
-							ResourceTypes: resourceTypes,
+							VersionFrom:            &putPlan.ID,
+							VersionedResourceTypes: resourceTypes,
 						}),
 					}),
 					expectedPlanFactory.NewPlan(atc.TaskPlan{
-						Name:          "some-other-task",
-						PipelineID:    42,
-						ResourceTypes: resourceTypes,
+						Name: "some-other-task",
+						VersionedResourceTypes: resourceTypes,
 					}),
 				})
 

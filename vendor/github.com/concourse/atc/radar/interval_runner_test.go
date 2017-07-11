@@ -1,8 +1,8 @@
 package radar_test
 
 import (
+	"context"
 	"errors"
-	"os"
 	"time"
 
 	"code.cloudfoundry.org/clock/fakeclock"
@@ -23,19 +23,14 @@ var _ = Describe("IntervalRunner", func() {
 		interval  time.Duration
 		times     chan time.Time
 
-		intervalRunner *IntervalRunner
+		intervalRunner IntervalRunner
 		fakeScanner    *radarfakes.FakeScanner
 
-		signalCh chan os.Signal
-		readyCh  chan struct{}
-		errCh    chan error
+		ctx    context.Context
+		cancel context.CancelFunc
 	)
 
 	BeforeEach(func() {
-		signalCh = make(chan os.Signal)
-		readyCh = make(chan struct{})
-		errCh = make(chan error)
-
 		epoch = time.Unix(123, 456).UTC()
 		fakeClock = fakeclock.NewFakeClock(epoch)
 
@@ -46,29 +41,30 @@ var _ = Describe("IntervalRunner", func() {
 			times <- fakeClock.Now()
 			return interval, nil
 		}
+		ctx, cancel = context.WithCancel(context.Background())
 
 		logger := lagertest.NewTestLogger("test")
 		intervalRunner = NewIntervalRunner(logger, fakeClock, "some-resource", fakeScanner)
 	})
 
 	Describe("RunFunc", func() {
+		var runErrs chan error
+
 		JustBeforeEach(func() {
+			errs := make(chan error, 1)
+			runErrs = errs
 			go func() {
-				errCh <- intervalRunner.RunFunc(signalCh, readyCh)
+				errs <- intervalRunner.Run(ctx)
+				close(errs)
 			}()
-			<-readyCh
+		})
+
+		AfterEach(func() {
+			cancel()
+			Expect(<-runErrs).To(BeNil())
 		})
 
 		Context("when run does not return error", func() {
-			AfterEach(func() {
-				signalCh <- os.Interrupt
-				<-errCh
-			})
-
-			It("closes the ready channel immediately", func() {
-				Expect(readyCh).To(BeClosed())
-			})
-
 			It("immediately runs a scan", func() {
 				Expect(<-times).To(Equal(epoch))
 			})
@@ -109,21 +105,16 @@ var _ = Describe("IntervalRunner", func() {
 			})
 
 			It("returns an error", func() {
-				Expect(<-errCh).To(Equal(disaster))
+				Expect(<-runErrs).To(Equal(disaster))
 			})
 		})
 
-		Context("when scanner.Run() returns ErrFailedToAcquireLease error", func() {
+		Context("when scanner.Run() returns ErrFailedToAcquireLock error", func() {
 			BeforeEach(func() {
 				fakeScanner.RunStub = func(lager.Logger, string) (time.Duration, error) {
 					times <- fakeClock.Now()
-					return interval, ErrFailedToAcquireLease
+					return interval, ErrFailedToAcquireLock
 				}
-			})
-
-			AfterEach(func() {
-				signalCh <- os.Interrupt
-				<-errCh
 			})
 
 			It("waits for the interval and tries again", func() {

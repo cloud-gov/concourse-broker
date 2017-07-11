@@ -60,21 +60,22 @@ var _ = Describe("OAuthCallbackHandler", func() {
 
 		fakeProviderFactory *authfakes.FakeProviderFactory
 
-		fakeTeamDB *dbfakes.FakeTeamDB
+		fakeTeam        *dbfakes.FakeTeam
+		fakeTeamFactory *dbfakes.FakeTeamFactory
 
 		signingKey *rsa.PrivateKey
 
 		expire time.Duration
 
-		server *httptest.Server
-		client *http.Client
-
-		team db.SavedTeam
+		server          *httptest.Server
+		client          *http.Client
+		redirectRequest *http.Request
 	)
 
 	BeforeEach(func() {
 		fakeProvider = new(providerfakes.FakeProvider)
 
+		fakeTeamFactory = new(dbfakes.FakeTeamFactory)
 		fakeProviderFactory = new(authfakes.FakeProviderFactory)
 
 		var err error
@@ -82,7 +83,7 @@ var _ = Describe("OAuthCallbackHandler", func() {
 		Expect(err).ToNot(HaveOccurred())
 		expire = 24 * time.Hour
 
-		fakeProviderFactory.GetProviderStub = func(team db.SavedTeam, providerName string) (provider.Provider, bool, error) {
+		fakeProviderFactory.GetProviderStub = func(team db.Team, providerName string) (provider.Provider, bool, error) {
 			if providerName == "some-provider" {
 				return fakeProvider, true, nil
 			}
@@ -92,29 +93,24 @@ var _ = Describe("OAuthCallbackHandler", func() {
 		preTokenClient = &http.Client{Timeout: 31 * time.Second}
 		fakeProvider.PreTokenClientReturns(preTokenClient, nil)
 
-		team = db.SavedTeam{
-			Team: db.Team{
-				Name: "some-team",
-			},
-		}
-
-		fakeTeamDBFactory := new(dbfakes.FakeTeamDBFactory)
-		fakeTeamDB = new(dbfakes.FakeTeamDB)
-		fakeTeamDB.GetTeamReturns(team, true, nil)
-		fakeTeamDBFactory.GetTeamDBReturns(fakeTeamDB)
+		fakeTeam = new(dbfakes.FakeTeam)
+		fakeTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+		fakeTeam.NameReturns("some-team")
 
 		handler, err := auth.NewOAuthHandler(
 			lagertest.NewTestLogger("test"),
 			fakeProviderFactory,
-			fakeTeamDBFactory,
+			fakeTeamFactory,
 			signingKey,
 			expire,
+			false,
 		)
 		Expect(err).ToNot(HaveOccurred())
 
 		mux := http.NewServeMux()
 		mux.Handle("/auth/", handler)
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			redirectRequest = r
 			fmt.Fprintln(w, "main page")
 		}))
 		mux.Handle("/public/fly_success", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +221,7 @@ var _ = Describe("OAuthCallbackHandler", func() {
 					It("looks up the verifier for the team from the query param", func() {
 						Expect(fakeProviderFactory.GetProviderCallCount()).To(Equal(1))
 						argTeam, providerName := fakeProviderFactory.GetProviderArgsForCall(0)
-						Expect(argTeam).To(Equal(team))
+						Expect(argTeam).To(Equal(fakeTeam))
 						Expect(providerName).To(Equal("some-provider"))
 					})
 
@@ -249,16 +245,19 @@ var _ = Describe("OAuthCallbackHandler", func() {
 						})
 
 						Describe("the ATC-Authorization cookie", func() {
-
 							var cookie *http.Cookie
 
 							JustBeforeEach(func() {
 								cookies := client.Jar.Cookies(request.URL)
-								cookie = cookies[0]
+								for _, c := range cookies {
+									if c.Name == auth.AuthCookieName {
+										cookie = c
+									}
+								}
 							})
 
 							It("set to a signed token that expires in 1 day", func() {
-								Expect(cookie.Name).To(Equal(auth.CookieName))
+								Expect(cookie).NotTo(BeNil())
 								Expect(cookie.Expires).To(BeTemporally("~", time.Now().Add(24*time.Hour), 5*time.Second))
 
 								Expect(cookie.Value).To(MatchRegexp(`^Bearer .*`))
@@ -276,7 +275,7 @@ var _ = Describe("OAuthCallbackHandler", func() {
 								Expect(err).ToNot(HaveOccurred())
 
 								claims := token.Claims.(jwt.MapClaims)
-								Expect(claims["teamName"]).To(Equal(team.Name))
+								Expect(claims["teamName"]).To(Equal("some-team"))
 								Expect(token.Valid).To(BeTrue())
 							})
 						})
@@ -289,13 +288,23 @@ var _ = Describe("OAuthCallbackHandler", func() {
 							cookies := client.Jar.Cookies(request.URL)
 							Expect(cookies).To(HaveLen(2))
 
-							cookie := cookies[0]
-							Expect(cookie.Value).To(MatchRegexp(`^Bearer .*`))
+							var authCookie *http.Cookie
+							var oauthStateCookie *http.Cookie
+
+							for _, c := range cookies {
+								if c.Name == auth.AuthCookieName {
+									authCookie = c
+								}
+								if c.Name == auth.OAuthStateCookie {
+									oauthStateCookie = c
+								}
+							}
+							Expect(authCookie).NotTo(BeNil())
+							Expect(authCookie.Value).To(MatchRegexp(`^Bearer .*`))
 							Expect(ioutil.ReadAll(response.Body)).To(Equal([]byte("fly success page\n")))
 
-							deletedCookie := cookies[1]
-							Expect(deletedCookie.Name).To(Equal(auth.OAuthStateCookie))
-							Expect(deletedCookie.MaxAge).To(Equal(-1))
+							Expect(oauthStateCookie).NotTo(BeNil())
+							Expect(oauthStateCookie.MaxAge).To(Equal(-1))
 						})
 					})
 
@@ -330,7 +339,7 @@ var _ = Describe("OAuthCallbackHandler", func() {
 
 				Context("when the team cannot be found", func() {
 					BeforeEach(func() {
-						fakeTeamDB.GetTeamReturns(db.SavedTeam{}, false, nil)
+						fakeTeamFactory.FindTeamReturns(nil, false, nil)
 					})
 
 					It("returns Not Found", func() {
@@ -348,84 +357,121 @@ var _ = Describe("OAuthCallbackHandler", func() {
 			})
 
 			Context("when a redirect URI is in the state", func() {
-				BeforeEach(func() {
-					state, err := json.Marshal(auth.OAuthState{
-						Redirect: "/",
-					})
-					Expect(err).ToNot(HaveOccurred())
-
-					encodedState := base64.RawURLEncoding.EncodeToString(state)
-
-					request.AddCookie(&http.Cookie{
-						Name:    auth.OAuthStateCookie,
-						Value:   encodedState,
-						Path:    "/",
-						Expires: time.Now().Add(time.Hour),
-					})
-
-					request.URL.RawQuery = url.Values{
-						"code":  {"some-code"},
-						"state": {encodedState},
-					}.Encode()
-				})
-
-				Context("when exchanging the token succeeds", func() {
-					var token *oauth2.Token
-					var httpClient *http.Client
-
+				Context("when the redirect URI is external", func() {
 					BeforeEach(func() {
-						token = &oauth2.Token{AccessToken: "some-access-token"}
-						httpClient = &http.Client{}
+						state, err := json.Marshal(auth.OAuthState{
+							Redirect: "https://google.com",
+							TeamName: "some-team",
+						})
+						Expect(err).ToNot(HaveOccurred())
 
-						fakeProvider.ExchangeReturns(token, nil)
-						fakeProvider.ClientReturns(httpClient)
+						encodedState := base64.RawURLEncoding.EncodeToString(state)
+
+						request.AddCookie(&http.Cookie{
+							Name:    auth.OAuthStateCookie,
+							Value:   encodedState,
+							Path:    "/",
+							Expires: time.Now().Add(time.Hour),
+						})
+
+						request.URL.RawQuery = url.Values{
+							"code":  {"some-code"},
+							"state": {encodedState},
+						}.Encode()
+						fakeProvider.VerifyReturns(true, nil)
+
+					})
+					It("does not redirect", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+					})
+				})
+
+				Context("when the redirect URI is not external", func() {
+					BeforeEach(func() {
+						state, err := json.Marshal(auth.OAuthState{
+							Redirect: "/",
+						})
+						Expect(err).ToNot(HaveOccurred())
+
+						encodedState := base64.RawURLEncoding.EncodeToString(state)
+
+						request.AddCookie(&http.Cookie{
+							Name:    auth.OAuthStateCookie,
+							Value:   encodedState,
+							Path:    "/",
+							Expires: time.Now().Add(time.Hour),
+						})
+
+						request.URL.RawQuery = url.Values{
+							"code":  {"some-code"},
+							"state": {encodedState},
+						}.Encode()
+
 					})
 
-					It("generated the OAuth token using the request's code", func() {
-						Expect(fakeProvider.ExchangeCallCount()).To(Equal(1))
-						_, code := fakeProvider.ExchangeArgsForCall(0)
-						Expect(code).To(Equal("some-code"))
-					})
+					Context("when exchanging the token succeeds", func() {
+						var token *oauth2.Token
+						var httpClient *http.Client
 
-					Context("when the token is verified", func() {
 						BeforeEach(func() {
-							fakeProvider.VerifyReturns(true, nil)
+							token = &oauth2.Token{AccessToken: "some-access-token"}
+							httpClient = &http.Client{}
+
+							fakeProvider.ExchangeReturns(token, nil)
+							fakeProvider.ClientReturns(httpClient)
 						})
 
-						It("redirects to the redirect uri", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-							Expect(ioutil.ReadAll(response.Body)).To(Equal([]byte("main page\n")))
-						})
-					})
-
-					Context("when the token is not verified", func() {
-						BeforeEach(func() {
-							fakeProvider.VerifyReturns(false, nil)
+						It("generated the OAuth token using the request's code", func() {
+							Expect(fakeProvider.ExchangeCallCount()).To(Equal(1))
+							_, code := fakeProvider.ExchangeArgsForCall(0)
+							Expect(code).To(Equal("some-code"))
 						})
 
-						It("returns Unauthorized", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+						Context("when the token is verified", func() {
+							BeforeEach(func() {
+								fakeProvider.VerifyReturns(true, nil)
+							})
+
+							It("redirects to the redirect uri", func() {
+								Expect(response.StatusCode).To(Equal(http.StatusOK))
+								Expect(ioutil.ReadAll(response.Body)).To(Equal([]byte("main page\n")))
+							})
+
+							It("appends csrf token to redirect request", func() {
+								Expect(redirectRequest.URL.RawQuery).To(MatchRegexp("csrf_token=[a-f0-9]{64}"))
+							})
 						})
 
-						It("does not set a cookie", func() {
-							Expect(response.Cookies()).To(BeEmpty())
-						})
-					})
+						Context("when the token is not verified", func() {
+							BeforeEach(func() {
+								fakeProvider.VerifyReturns(false, nil)
+							})
 
-					Context("when the token cannot be verified", func() {
-						BeforeEach(func() {
-							fakeProvider.VerifyReturns(false, errors.New("nope"))
+							It("returns Unauthorized", func() {
+								Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+							})
+
+							It("does not set a cookie", func() {
+								Expect(response.Cookies()).To(BeEmpty())
+							})
 						})
 
-						It("returns Internal Server Error", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
+						Context("when the token cannot be verified", func() {
+							BeforeEach(func() {
+								fakeProvider.VerifyReturns(false, errors.New("nope"))
+							})
 
-						It("does not set a cookie", func() {
-							Expect(response.Cookies()).To(BeEmpty())
+							It("returns Internal Server Error", func() {
+								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+							})
+
+							It("does not set a cookie", func() {
+								Expect(response.Cookies()).To(BeEmpty())
+							})
 						})
 					})
 				})
+
 			})
 
 			Context("when the request has no state", func() {

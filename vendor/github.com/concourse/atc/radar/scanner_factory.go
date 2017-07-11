@@ -4,31 +4,39 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/clock"
+	"github.com/concourse/atc/creds"
+	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/resource"
 )
 
 type ScannerFactory interface {
-	NewResourceScanner(db RadarDB) Scanner
+	NewResourceScanner(dbPipeline db.Pipeline) Scanner
 }
 
 type scannerFactory struct {
-	tracker         resource.Tracker
-	defaultInterval time.Duration
-	externalURL     string
+	resourceFactory       resource.ResourceFactory
+	resourceConfigFactory db.ResourceConfigFactory
+	defaultInterval       time.Duration
+	externalURL           string
+	variablesFactory      creds.VariablesFactory
 }
 
 func NewScannerFactory(
-	tracker resource.Tracker,
+	resourceFactory resource.ResourceFactory,
+	resourceConfigFactory db.ResourceConfigFactory,
 	defaultInterval time.Duration,
 	externalURL string,
+	variablesFactory creds.VariablesFactory,
 ) ScannerFactory {
 	return &scannerFactory{
-		tracker:         tracker,
-		defaultInterval: defaultInterval,
-		externalURL:     externalURL,
+		resourceFactory:       resourceFactory,
+		resourceConfigFactory: resourceConfigFactory,
+		defaultInterval:       defaultInterval,
+		externalURL:           externalURL,
+		variablesFactory:      variablesFactory,
 	}
 }
 
-func (f *scannerFactory) NewResourceScanner(db RadarDB) Scanner {
-	return NewResourceScanner(clock.NewClock(), f.tracker, f.defaultInterval, db, f.externalURL)
+func (f *scannerFactory) NewResourceScanner(dbPipeline db.Pipeline) Scanner {
+	return NewResourceScanner(clock.NewClock(), f.resourceFactory, f.resourceConfigFactory, f.defaultInterval, dbPipeline, f.externalURL, f.variablesFactory.NewVariables(dbPipeline.TeamName(), dbPipeline.Name()))
 }

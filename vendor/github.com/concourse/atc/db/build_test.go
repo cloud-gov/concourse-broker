@@ -4,121 +4,223 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/db/algorithm"
-	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/event"
-	"github.com/lib/pq"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Build", func() {
-	var dbConn db.Conn
-	var listener *pq.Listener
-
-	var teamDB db.TeamDB
-	var pipelineDB db.PipelineDB
-	var pipeline db.SavedPipeline
-	var pipelineConfig atc.Config
+	var (
+		team db.Team
+	)
 
 	BeforeEach(func() {
-		postgresRunner.Truncate()
-
-		dbConn = db.Wrap(postgresRunner.Open())
-
-		listener = pq.NewListener(postgresRunner.DataSourceName(), time.Second, time.Minute, nil)
-
-		Eventually(listener.Ping, 5*time.Second).ShouldNot(HaveOccurred())
-		bus := db.NewNotificationsBus(listener, dbConn)
-
-		pgxConn := postgresRunner.OpenPgx()
-		fakeConnector := new(dbfakes.FakeConnector)
-		retryableConn := &db.RetryableConn{Connector: fakeConnector, Conn: pgxConn}
-
-		lockFactory := db.NewLockFactory(retryableConn)
-		teamDBFactory := db.NewTeamDBFactory(dbConn, bus, lockFactory)
-		teamDB = teamDBFactory.GetTeamDB(atc.DefaultTeamName)
-
-		pipelineConfig = atc.Config{
-			Jobs: atc.JobConfigs{
-				{
-					Name: "some-job",
-				},
-				{
-					Name: "some-other-job",
-				},
-			},
-			Resources: atc.ResourceConfigs{
-				{
-					Name: "some-resource",
-					Type: "some-type",
-				},
-				{
-					Name: "some-implicit-resource",
-					Type: "some-type",
-				},
-				{
-					Name: "some-explicit-resource",
-					Type: "some-type",
-				},
-			},
-		}
-
 		var err error
-		pipeline, _, err = teamDB.SaveConfigToBeDeprecated("some-pipeline", pipelineConfig, db.ConfigVersion(1), db.PipelineUnpaused)
-		Expect(err).NotTo(HaveOccurred())
-
-		pipelineDBFactory := db.NewPipelineDBFactory(dbConn, bus, lockFactory)
-		pipelineDB = pipelineDBFactory.Build(pipeline)
-	})
-
-	AfterEach(func() {
-		err := dbConn.Close()
-		Expect(err).NotTo(HaveOccurred())
-
-		err = listener.Close()
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	Describe("IsOneOff", func() {
-		It("returns true for one off build", func() {
-			oneOffBuild, err := teamDB.CreateOneOffBuild()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(oneOffBuild.IsOneOff()).To(BeTrue())
-		})
-
-		It("returns false for builds that belong to pipeline", func() {
-			pipelineBuild, err := pipelineDB.CreateJobBuild("some-job")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pipelineBuild.IsOneOff()).To(BeFalse())
-		})
+		team, err = teamFactory.CreateTeam(atc.Team{Name: "some-team"})
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	Describe("Reload", func() {
 		It("updates the model", func() {
-			build, err := teamDB.CreateOneOffBuild()
+			build, err := team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
-			started, err := build.Start("engine", "metadata")
+			started, err := build.Start("engine", `{"meta":"data"}`, atc.Plan{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(started).To(BeTrue())
 
-			Expect(build.Status()).To(Equal(db.StatusPending))
+			Expect(build.Status()).To(Equal(db.BuildStatusPending))
 
 			found, err := build.Reload()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(build.Status()).To(Equal(db.StatusStarted))
+			Expect(build.Status()).To(Equal(db.BuildStatusStarted))
+		})
+	})
+
+	Describe("Start", func() {
+		var build db.Build
+		var plan atc.Plan
+
+		BeforeEach(func() {
+			plan = atc.Plan{
+				ID: atc.PlanID("56"),
+				Get: &atc.GetPlan{
+					Type:     "some-type",
+					Name:     "some-name",
+					Resource: "some-resource",
+					Source:   atc.Source{"some": "source"},
+					Params:   atc.Params{"some": "params"},
+					Version:  &atc.Version{"some": "version"},
+					Tags:     atc.Tags{"some-tags"},
+					VersionedResourceTypes: atc.VersionedResourceTypes{
+						{
+							ResourceType: atc.ResourceType{
+								Name:       "some-name",
+								Source:     atc.Source{"some": "source"},
+								Type:       "some-type",
+								Privileged: true,
+								Tags:       atc.Tags{"some-tags"},
+							},
+							Version: atc.Version{"some-resource-type": "version"},
+						},
+					},
+				},
+			}
+
+			var err error
+			build, err = team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			started, err := build.Start("engine", `{"meta":"data"}`, plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+		})
+
+		It("creates Start event", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusStarted))
+
+			events, err := build.Events(0)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer events.Close()
+
+			Expect(events.Next()).To(Equal(envelope(event.Status{
+				Status: atc.StatusStarted,
+				Time:   build.StartTime().Unix(),
+			})))
+		})
+
+		It("updates build status", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusStarted))
+		})
+
+		It("saves the public plan", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.PublicPlan()).To(Equal(plan.Public()))
+		})
+	})
+
+	Describe("Finish", func() {
+		var build db.Build
+		BeforeEach(func() {
+			var err error
+			build, err = team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = build.Finish(db.BuildStatusSucceeded)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("creates Finish event", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusSucceeded))
+
+			events, err := build.Events(0)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer events.Close()
+
+			Expect(events.Next()).To(Equal(envelope(event.Status{
+				Status: atc.StatusSucceeded,
+				Time:   build.EndTime().Unix(),
+			})))
+		})
+
+		It("updates build status", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusSucceeded))
+		})
+
+		It("sets engine metadata to nil", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.EngineMetadata()).To(BeEmpty())
+		})
+	})
+
+	Describe("Abort", func() {
+		var build db.Build
+		BeforeEach(func() {
+			var err error
+			build, err = team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = build.MarkAsAborted()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("updates build status", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusAborted))
+		})
+	})
+
+	Describe("Events", func() {
+		It("saves and emits status events", func() {
+			build, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("allowing you to subscribe when no events have yet occurred")
+			events, err := build.Events(0)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer events.Close()
+
+			By("emitting a status event when started")
+			started, err := build.Start("engine", `{"meta":"data"}`, atc.Plan{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			Expect(events.Next()).To(Equal(envelope(event.Status{
+				Status: atc.StatusStarted,
+				Time:   build.StartTime().Unix(),
+			})))
+
+			By("emitting a status event when finished")
+			err = build.Finish(db.BuildStatusSucceeded)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err = build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			Expect(events.Next()).To(Equal(envelope(event.Status{
+				Status: atc.StatusSucceeded,
+				Time:   build.EndTime().Unix(),
+			})))
+
+			By("ending the stream when finished")
+			_, err = events.Next()
+			Expect(err).To(Equal(db.ErrEndOfBuildEventStream))
 		})
 	})
 
 	Describe("SaveEvent", func() {
 		It("saves and propagates events correctly", func() {
-			build, err := teamDB.CreateOneOffBuild()
+			build, err := team.CreateOneOffBuild()
 			Expect(err).NotTo(HaveOccurred())
 
 			By("allowing you to subscribe when no events have yet occurred")
@@ -195,64 +297,47 @@ var _ = Describe("Build", func() {
 		})
 	})
 
-	Describe("Events", func() {
-		It("saves and emits status events", func() {
-			build, err := teamDB.CreateOneOffBuild()
-			Expect(err).NotTo(HaveOccurred())
-
-			By("allowing you to subscribe when no events have yet occurred")
-			events, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer events.Close()
-
-			By("emitting a status event when started")
-			started, err := build.Start("engine", "metadata")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(started).To(BeTrue())
-
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusStarted,
-				Time:   build.StartTime().Unix(),
-			})))
-
-			By("emitting a status event when finished")
-			err = build.Finish(db.StatusSucceeded)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err = build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusSucceeded,
-				Time:   build.EndTime().Unix(),
-			})))
-
-			By("ending the stream when finished")
-			_, err = events.Next()
-			Expect(err).To(Equal(db.ErrEndOfBuildEventStream))
-		})
-	})
-
 	Describe("SaveInput", func() {
-		It("can get a build's input", func() {
-			build, err := pipelineDB.CreateJobBuild("some-job")
+		var pipeline db.Pipeline
+		var job db.Job
+
+		BeforeEach(func() {
+			pipelineConfig := atc.Config{
+				Jobs: atc.JobConfigs{
+					{
+						Name: "some-job",
+					},
+				},
+				Resources: atc.ResourceConfigs{
+					{
+						Name: "some-resource",
+						Type: "some-type",
+					},
+				},
+			}
+
+			var err error
+			pipeline, _, err = team.SavePipeline("some-pipeline", pipelineConfig, db.ConfigVersion(1), db.PipelineUnpaused)
 			Expect(err).ToNot(HaveOccurred())
 
-			expectedBuildInput, err := pipelineDB.SaveInput(build.ID(), db.BuildInput{
-				Name: "some-input",
-				VersionedResource: db.VersionedResource{
+			var found bool
+			job, found, err = pipeline.Job("some-job")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+		})
+
+		Context("when a job build", func() {
+			It("saves the build's input", func() {
+				build, err := job.CreateBuild()
+				Expect(err).ToNot(HaveOccurred())
+
+				versionedResource := db.VersionedResource{
 					Resource: "some-resource",
 					Type:     "some-type",
-					Version: db.Version{
+					Version: db.ResourceVersion{
 						"some": "version",
 					},
-					Metadata: []db.MetadataField{
+					Metadata: []db.ResourceMetadataField{
 						{
 							Name:  "meta1",
 							Value: "data1",
@@ -262,206 +347,354 @@ var _ = Describe("Build", func() {
 							Value: "data2",
 						},
 					},
-					PipelineID: pipeline.ID,
-				},
-			})
-			Expect(err).ToNot(HaveOccurred())
+				}
+				err = build.SaveInput(db.BuildInput{
+					Name:              "some-input",
+					VersionedResource: versionedResource,
+				})
+				Expect(err).ToNot(HaveOccurred())
 
-			actualBuildInput, err := build.GetVersionedResources()
-			expectedBuildInput.CheckOrder = 0
-			Expect(err).ToNot(HaveOccurred())
-			Expect(len(actualBuildInput)).To(Equal(1))
-			Expect(actualBuildInput[0]).To(Equal(expectedBuildInput))
+				actualBuildInput, err := build.GetVersionedResources()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(len(actualBuildInput)).To(Equal(1))
+				Expect(actualBuildInput[0].VersionedResource).To(Equal(versionedResource))
+			})
+		})
+
+		Context("when a one off build", func() {
+			It("does not save the build's input", func() {
+				build, err := team.CreateOneOffBuild()
+				Expect(err).ToNot(HaveOccurred())
+
+				versionedResource := db.VersionedResource{
+					Resource: "some-resource",
+					Type:     "some-type",
+					Version: db.ResourceVersion{
+						"some": "version",
+					},
+					Metadata: []db.ResourceMetadataField{
+						{
+							Name:  "meta1",
+							Value: "data1",
+						},
+						{
+							Name:  "meta2",
+							Value: "data2",
+						},
+					},
+				}
+				err = build.SaveInput(db.BuildInput{
+					Name:              "some-input",
+					VersionedResource: versionedResource,
+				})
+				Expect(err).ToNot(HaveOccurred())
+
+				actualBuildInput, err := build.GetVersionedResources()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(len(actualBuildInput)).To(Equal(0))
+			})
 		})
 	})
 
 	Describe("SaveOutput", func() {
-		It("can get a build's output", func() {
-			build, err := pipelineDB.CreateJobBuild("some-job")
+		var pipeline db.Pipeline
+		var job db.Job
+
+		BeforeEach(func() {
+			pipelineConfig := atc.Config{
+				Jobs: atc.JobConfigs{
+					{
+						Name: "some-job",
+					},
+				},
+				Resources: atc.ResourceConfigs{
+					{
+						Name: "some-implicit-resource",
+						Type: "some-type",
+					},
+					{
+						Name: "some-explicit-resource",
+						Type: "some-type",
+					},
+				},
+			}
+
+			var err error
+			pipeline, _, err = team.SavePipeline("some-pipeline", pipelineConfig, db.ConfigVersion(1), db.PipelineUnpaused)
 			Expect(err).ToNot(HaveOccurred())
 
-			expectedBuildOutput, err := pipelineDB.SaveOutput(build.ID(), db.VersionedResource{
-				Resource: "some-explicit-resource",
-				Type:     "some-type",
-				Version: db.Version{
-					"some": "version",
-				},
-				Metadata: []db.MetadataField{
-					{
-						Name:  "meta1",
-						Value: "data1",
-					},
-					{
-						Name:  "meta2",
-						Value: "data2",
-					},
-				},
-				PipelineID: pipeline.ID,
-			}, true)
+			var found bool
+			job, found, err = pipeline.Job("some-job")
 			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+		})
 
-			_, err = pipelineDB.SaveOutput(build.ID(), db.VersionedResource{
-				Resource: "some-implicit-resource",
-				Type:     "some-type",
-				Version: db.Version{
-					"some": "version",
-				},
-				Metadata: []db.MetadataField{
-					{
-						Name:  "meta1",
-						Value: "data1",
-					},
-					{
-						Name:  "meta2",
-						Value: "data2",
-					},
-				},
-				PipelineID: pipeline.ID,
-			}, false)
-			Expect(err).ToNot(HaveOccurred())
+		Context("when a job build", func() {
+			It("can get a build's output", func() {
+				build, err := job.CreateBuild()
+				Expect(err).ToNot(HaveOccurred())
 
-			actualBuildOutput, err := build.GetVersionedResources()
-			expectedBuildOutput.CheckOrder = 0
-			Expect(err).ToNot(HaveOccurred())
-			Expect(len(actualBuildOutput)).To(Equal(1))
-			Expect(actualBuildOutput[0]).To(Equal(expectedBuildOutput))
+				versionedResource := db.VersionedResource{
+					Resource: "some-explicit-resource",
+					Type:     "some-type",
+					Version: db.ResourceVersion{
+						"some": "version",
+					},
+					Metadata: []db.ResourceMetadataField{
+						{
+							Name:  "meta1",
+							Value: "data1",
+						},
+						{
+							Name:  "meta2",
+							Value: "data2",
+						},
+					},
+				}
+
+				err = build.SaveOutput(versionedResource, true)
+				Expect(err).ToNot(HaveOccurred())
+
+				err = build.SaveOutput(db.VersionedResource{
+					Resource: "some-implicit-resource",
+					Type:     "some-type",
+					Version: db.ResourceVersion{
+						"some": "version",
+					},
+					Metadata: []db.ResourceMetadataField{
+						{
+							Name:  "meta1",
+							Value: "data1",
+						},
+						{
+							Name:  "meta2",
+							Value: "data2",
+						},
+					},
+				}, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				actualBuildOutput, err := build.GetVersionedResources()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(len(actualBuildOutput)).To(Equal(1))
+				Expect(actualBuildOutput[0].VersionedResource).To(Equal(versionedResource))
+			})
+		})
+
+		Context("when a one off build", func() {
+			It("can not get a build's output", func() {
+				build, err := team.CreateOneOffBuild()
+				Expect(err).ToNot(HaveOccurred())
+
+				versionedResource := db.VersionedResource{
+					Resource: "some-explicit-resource",
+					Type:     "some-type",
+					Version: db.ResourceVersion{
+						"some": "version",
+					},
+					Metadata: []db.ResourceMetadataField{
+						{
+							Name:  "meta1",
+							Value: "data1",
+						},
+						{
+							Name:  "meta2",
+							Value: "data2",
+						},
+					},
+				}
+
+				err = build.SaveOutput(versionedResource, true)
+				Expect(err).ToNot(HaveOccurred())
+
+				err = build.SaveOutput(db.VersionedResource{
+					Resource: "some-implicit-resource",
+					Type:     "some-type",
+					Version: db.ResourceVersion{
+						"some": "version",
+					},
+					Metadata: []db.ResourceMetadataField{
+						{
+							Name:  "meta1",
+							Value: "data1",
+						},
+						{
+							Name:  "meta2",
+							Value: "data2",
+						},
+					},
+				}, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				actualBuildOutput, err := build.GetVersionedResources()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(len(actualBuildOutput)).To(Equal(0))
+			})
 		})
 	})
 
 	Describe("GetResources", func() {
-		It("can get (no) resources from a one-off build", func() {
-			oneOffBuild, err := teamDB.CreateOneOffBuild()
-			Expect(err).NotTo(HaveOccurred())
-
-			inputs, outputs, err := oneOffBuild.GetResources()
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(inputs).To(BeEmpty())
-			Expect(outputs).To(BeEmpty())
-		})
-	})
-
-	Describe("build operations", func() {
-		var build db.Build
+		var (
+			pipeline db.Pipeline
+			job      db.Job
+			vr1      db.VersionedResource
+			vr2      db.VersionedResource
+		)
 
 		BeforeEach(func() {
+			vr1 = db.VersionedResource{
+				Resource: "some-resource",
+				Type:     "some-type",
+				Version:  db.ResourceVersion{"ver": "1"},
+			}
+
+			vr2 = db.VersionedResource{
+				Resource: "some-other-resource",
+				Type:     "some-type",
+				Version:  db.ResourceVersion{"ver": "2"},
+			}
+
+			pipelineConfig := atc.Config{
+				Jobs: atc.JobConfigs{
+					{
+						Name: "some-job",
+					},
+				},
+				Resources: atc.ResourceConfigs{
+					{
+						Name: "some-resource",
+						Type: "some-type",
+					},
+					{
+						Name: "some-other-resource",
+						Type: "some-type",
+					},
+				},
+			}
+
 			var err error
-			build, err = teamDB.CreateOneOffBuild()
+			pipeline, _, err = team.SavePipeline("some-pipeline", pipelineConfig, db.ConfigVersion(1), db.PipelineUnpaused)
+			Expect(err).ToNot(HaveOccurred())
+
+			var found bool
+			job, found, err = pipeline.Job("some-job")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+		})
+
+		It("correctly distinguishes them", func() {
+			build, err := job.CreateBuild()
 			Expect(err).NotTo(HaveOccurred())
+
+			// save a normal 'get'
+			err = build.SaveInput(db.BuildInput{
+				Name:              "some-input",
+				VersionedResource: vr1,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// save implicit output from 'get'
+			err = build.SaveOutput(vr1, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			// save explicit output from 'put'
+			err = build.SaveOutput(vr2, true)
+			Expect(err).NotTo(HaveOccurred())
+
+			// save the dependent get
+			err = build.SaveInput(db.BuildInput{
+				Name:              "some-dependent-input",
+				VersionedResource: vr2,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// save the dependent 'get's implicit output
+			err = build.SaveOutput(vr2, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			inputs, outputs, err := build.Resources()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inputs).To(ConsistOf([]db.BuildInput{
+				{Name: "some-input", VersionedResource: vr1, FirstOccurrence: true},
+			}))
+
+			Expect(outputs).To(ConsistOf([]db.BuildOutput{
+				{VersionedResource: vr2},
+			}))
+
 		})
 
-		Describe("Start", func() {
-			JustBeforeEach(func() {
-				started, err := build.Start("engine", "metadata")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(started).To(BeTrue())
+		It("fails to save build output if resource does not exist", func() {
+			build, err := job.CreateBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			vr := db.VersionedResource{
+				Resource: "unknown-resource",
+				Type:     "some-type",
+				Version:  db.ResourceVersion{"ver": "2"},
+			}
+
+			err = build.SaveOutput(vr, false)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("resource 'unknown-resource' not found"))
+		})
+	})
+
+	Describe("Pipeline", func() {
+		var (
+			build           db.Build
+			foundPipeline   db.Pipeline
+			createdPipeline db.Pipeline
+			found           bool
+		)
+
+		JustBeforeEach(func() {
+			var err error
+			foundPipeline, found, err = build.Pipeline()
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		Context("when a job build", func() {
+			BeforeEach(func() {
+				var err error
+				createdPipeline, _, err = team.SavePipeline("some-pipeline", atc.Config{
+					Jobs: atc.JobConfigs{
+						{
+							Name: "some-job",
+						},
+					},
+				}, db.ConfigVersion(1), db.PipelineUnpaused)
+				Expect(err).ToNot(HaveOccurred())
+
+				job, found, err := createdPipeline.Job("some-job")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				build, err = job.CreateBuild()
+				Expect(err).ToNot(HaveOccurred())
 			})
 
-			It("creates Start event", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
+			It("returns the correct pipeline", func() {
 				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusStarted))
-
-				events, err := build.Events(0)
-				Expect(err).NotTo(HaveOccurred())
-
-				defer events.Close()
-
-				Expect(events.Next()).To(Equal(envelope(event.Status{
-					Status: atc.StatusStarted,
-					Time:   build.StartTime().Unix(),
-				})))
-			})
-
-			It("updates build status", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusStarted))
+				Expect(foundPipeline).To(Equal(createdPipeline))
 			})
 		})
 
-		Describe("Abort", func() {
-			JustBeforeEach(func() {
-				err := build.Abort()
-				Expect(err).NotTo(HaveOccurred())
+		Context("when a one off build", func() {
+			BeforeEach(func() {
+				var err error
+				build, err = team.CreateOneOffBuild()
+				Expect(err).ToNot(HaveOccurred())
 			})
 
-			It("updates build status", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusAborted))
-			})
-		})
-
-		Describe("Finish", func() {
-			JustBeforeEach(func() {
-				err := build.Finish(db.StatusSucceeded)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("creates Finish event", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusSucceeded))
-
-				events, err := build.Events(0)
-				Expect(err).NotTo(HaveOccurred())
-
-				defer events.Close()
-
-				Expect(events.Next()).To(Equal(envelope(event.Status{
-					Status: atc.StatusSucceeded,
-					Time:   build.EndTime().Unix(),
-				})))
-			})
-
-			It("updates build status", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusSucceeded))
-			})
-		})
-
-		Describe("MarkAsFailed", func() {
-			var cause error
-
-			JustBeforeEach(func() {
-				cause = errors.New("disaster")
-				err := build.MarkAsFailed(cause)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("creates Error event", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusErrored))
-
-				events, err := build.Events(0)
-				Expect(err).NotTo(HaveOccurred())
-
-				defer events.Close()
-
-				Expect(events.Next()).To(Equal(envelope(event.Error{
-					Message: "disaster",
-				})))
-			})
-
-			It("updates build status", func() {
-				found, err := build.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.Status()).To(Equal(db.StatusErrored))
+			It("does not return a pipeline", func() {
+				Expect(found).To(BeFalse())
+				Expect(foundPipeline).To(BeNil())
 			})
 		})
 	})
 
-	Describe("GetBuildPreparation", func() {
+	Describe("Preparation", func() {
 		var (
 			build             db.Build
 			err               error
@@ -481,14 +714,14 @@ var _ = Describe("Build", func() {
 
 		Context("for one-off build", func() {
 			BeforeEach(func() {
-				build, err = teamDB.CreateOneOffBuild()
+				build, err = team.CreateOneOffBuild()
 				Expect(err).NotTo(HaveOccurred())
 
 				expectedBuildPrep.BuildID = build.ID()
 			})
 
 			It("returns build preparation", func() {
-				buildPrep, found, err := build.GetPreparation()
+				buildPrep, found, err := build.Preparation()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -496,7 +729,7 @@ var _ = Describe("Build", func() {
 
 			Context("when the build is started", func() {
 				BeforeEach(func() {
-					started, err := build.Start("some-engine", "some-metadata")
+					started, err := build.Start("some-engine", `{"meta":"data"}`, atc.Plan{})
 					Expect(started).To(BeTrue())
 					Expect(err).NotTo(HaveOccurred())
 
@@ -506,7 +739,7 @@ var _ = Describe("Build", func() {
 				})
 
 				It("returns build preparation", func() {
-					buildPrep, found, err := build.GetPreparation()
+					buildPrep, found, err := build.Preparation()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -515,16 +748,49 @@ var _ = Describe("Build", func() {
 		})
 
 		Context("for job build", func() {
+			var (
+				pipeline db.Pipeline
+				job      db.Job
+			)
+
 			BeforeEach(func() {
-				build, err = pipelineDB.CreateJobBuild("some-job")
+				var err error
+				pipeline, _, err = team.SavePipeline("some-pipeline", atc.Config{
+					Resources: atc.ResourceConfigs{
+						{
+							Name: "some-resource",
+							Type: "some-type",
+							Source: atc.Source{
+								"source-config": "some-value",
+							},
+						},
+					},
+					Jobs: atc.JobConfigs{
+						{
+							Name: "some-job",
+						},
+					},
+				}, db.ConfigVersion(1), db.PipelineUnpaused)
+				Expect(err).ToNot(HaveOccurred())
+
+				var found bool
+				job, found, err = pipeline.Job("some-job")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				build, err = job.CreateBuild()
 				Expect(err).NotTo(HaveOccurred())
 
 				expectedBuildPrep.BuildID = build.ID()
+
+				job, found, err = pipeline.Job("some-job")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
 			})
 
 			Context("when inputs are satisfied", func() {
 				BeforeEach(func() {
-					err = pipelineDB.SaveResourceVersions(
+					err = pipeline.SaveResourceVersions(
 						atc.ResourceConfig{
 							Name: "some-resource",
 							Type: "some-type",
@@ -535,14 +801,14 @@ var _ = Describe("Build", func() {
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					versions, _, found, err := pipelineDB.GetResourceVersions("some-resource", db.Page{Limit: 1})
+					versions, _, found, err := pipeline.GetResourceVersions("some-resource", db.Page{Limit: 1})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(versions).To(HaveLen(1))
 
-					pipelineDB.SaveNextInputMapping(algorithm.InputMapping{
+					job.SaveNextInputMapping(algorithm.InputMapping{
 						"some-input": {VersionID: versions[0].ID, FirstOccurrence: true},
-					}, "some-job")
+					})
 
 					expectedBuildPrep.Inputs = map[string]db.BuildPreparationStatus{
 						"some-input": db.BuildPreparationStatusNotBlocking,
@@ -551,7 +817,7 @@ var _ = Describe("Build", func() {
 
 				Context("when the build is started", func() {
 					BeforeEach(func() {
-						started, err := build.Start("some-engine", "some-metadata")
+						started, err := build.Start("some-engine", `{"meta":"data"}`, atc.Plan{})
 						Expect(started).To(BeTrue())
 						Expect(err).NotTo(HaveOccurred())
 
@@ -563,7 +829,7 @@ var _ = Describe("Build", func() {
 					})
 
 					It("returns build preparation", func() {
-						buildPrep, found, err := build.GetPreparation()
+						buildPrep, found, err := build.Preparation()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -572,14 +838,14 @@ var _ = Describe("Build", func() {
 
 				Context("when pipeline is paused", func() {
 					BeforeEach(func() {
-						err := pipelineDB.Pause()
+						err := pipeline.Pause()
 						Expect(err).NotTo(HaveOccurred())
 
 						expectedBuildPrep.PausedPipeline = db.BuildPreparationStatusBlocking
 					})
 
 					It("returns build preparation with paused pipeline", func() {
-						buildPrep, found, err := build.GetPreparation()
+						buildPrep, found, err := build.Preparation()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -588,14 +854,14 @@ var _ = Describe("Build", func() {
 
 				Context("when job is paused", func() {
 					BeforeEach(func() {
-						err := pipelineDB.PauseJob("some-job")
+						err := job.Pause()
 						Expect(err).NotTo(HaveOccurred())
 
 						expectedBuildPrep.PausedJob = db.BuildPreparationStatusBlocking
 					})
 
 					It("returns build preparation with paused pipeline", func() {
-						buildPrep, found, err := build.GetPreparation()
+						buildPrep, found, err := build.Preparation()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -604,14 +870,14 @@ var _ = Describe("Build", func() {
 
 				Context("when max running builds is reached", func() {
 					BeforeEach(func() {
-						err := pipelineDB.SetMaxInFlightReached("some-job", true)
+						err := job.SetMaxInFlightReached(true)
 						Expect(err).NotTo(HaveOccurred())
 
 						expectedBuildPrep.MaxRunningBuilds = db.BuildPreparationStatusBlocking
 					})
 
 					It("returns build preparation with max in flight reached", func() {
-						buildPrep, found, err := build.GetPreparation()
+						buildPrep, found, err := build.Preparation()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -620,15 +886,15 @@ var _ = Describe("Build", func() {
 
 				Context("when max running builds is de-reached", func() {
 					BeforeEach(func() {
-						err := pipelineDB.SetMaxInFlightReached("some-job", true)
+						err := job.SetMaxInFlightReached(true)
 						Expect(err).NotTo(HaveOccurred())
 
-						err = pipelineDB.SetMaxInFlightReached("some-job", false)
+						err = job.SetMaxInFlightReached(false)
 						Expect(err).NotTo(HaveOccurred())
 					})
 
 					It("returns build preparation with max in flight not reached", func() {
-						buildPrep, found, err := build.GetPreparation()
+						buildPrep, found, err := build.Preparation()
 						Expect(err).NotTo(HaveOccurred())
 						Expect(found).To(BeTrue())
 						Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -642,7 +908,7 @@ var _ = Describe("Build", func() {
 				})
 
 				It("returns blocking inputs satisfied", func() {
-					buildPrep, found, err := build.GetPreparation()
+					buildPrep, found, err := build.Preparation()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(buildPrep).To(Equal(expectedBuildPrep))
@@ -651,7 +917,7 @@ var _ = Describe("Build", func() {
 
 			Context("when some inputs are not satisfied", func() {
 				BeforeEach(func() {
-					pipelineConfig = atc.Config{
+					pipelineConfig := atc.Config{
 						Jobs: atc.JobConfigs{
 							{
 								Name: "some-job",
@@ -686,10 +952,10 @@ var _ = Describe("Build", func() {
 						},
 					}
 
-					pipeline, _, err = teamDB.SaveConfigToBeDeprecated("some-pipeline", pipelineConfig, db.ConfigVersion(1), db.PipelineUnpaused)
-					Expect(err).NotTo(HaveOccurred())
+					pipeline, _, err = team.SavePipeline("some-pipeline", pipelineConfig, db.ConfigVersion(2), db.PipelineUnpaused)
+					Expect(err).ToNot(HaveOccurred())
 
-					err = pipelineDB.SaveResourceVersions(
+					err = pipeline.SaveResourceVersions(
 						atc.ResourceConfig{
 							Name: "input1",
 							Type: "some-type",
@@ -700,7 +966,7 @@ var _ = Describe("Build", func() {
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					err = pipelineDB.SaveResourceVersions(
+					err = pipeline.SaveResourceVersions(
 						atc.ResourceConfig{
 							Name: "input6",
 							Type: "some-type",
@@ -711,14 +977,18 @@ var _ = Describe("Build", func() {
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					versions, _, found, err := pipelineDB.GetResourceVersions("input1", db.Page{Limit: 1})
+					job, found, err := pipeline.Job("some-job")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+
+					versions, _, found, err := pipeline.GetResourceVersions("input1", db.Page{Limit: 1})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(versions).To(HaveLen(1))
 
-					pipelineDB.SaveIndependentInputMapping(algorithm.InputMapping{
+					job.SaveIndependentInputMapping(algorithm.InputMapping{
 						"input1": {VersionID: versions[0].ID, FirstOccurrence: true},
-					}, "some-job")
+					})
 
 					expectedBuildPrep.Inputs = map[string]db.BuildPreparationStatus{
 						"input1": db.BuildPreparationStatusNotBlocking,
@@ -739,48 +1009,223 @@ var _ = Describe("Build", func() {
 				})
 
 				It("returns blocking inputs satisfied", func() {
-					buildPrep, found, err := build.GetPreparation()
+					buildPrep, found, err := build.Preparation()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(buildPrep).To(Equal(expectedBuildPrep))
 				})
 			})
 		})
+
+		Describe("Schedule", func() {
+			var (
+				build db.Build
+				found bool
+				f     bool
+			)
+
+			BeforeEach(func() {
+				pipeline, _, err := team.SavePipeline("some-pipeline", atc.Config{
+					Jobs: atc.JobConfigs{
+						{
+							Name: "some-job",
+						},
+					},
+				}, db.ConfigVersion(1), db.PipelineUnpaused)
+				Expect(err).ToNot(HaveOccurred())
+
+				job, found, err := pipeline.Job("some-job")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				build, err = job.CreateBuild()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(build.IsScheduled()).To(BeFalse())
+			})
+
+			JustBeforeEach(func() {
+				found, err = build.Schedule()
+				Expect(err).ToNot(HaveOccurred())
+
+				f, err = build.Reload()
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			Context("when build exists", func() {
+				It("sets the build to scheduled", func() {
+					Expect(f).To(BeTrue())
+					Expect(found).To(BeTrue())
+					Expect(build.IsScheduled()).To(BeTrue())
+				})
+			})
+
+			Context("when the build does not exist", func() {
+				var found2 bool
+				BeforeEach(func() {
+					var err error
+					found2, err = build.Delete()
+					Expect(err).ToNot(HaveOccurred())
+				})
+
+				It("returns false", func() {
+					Expect(f).To(BeFalse())
+					Expect(found2).To(BeTrue())
+					Expect(found).To(BeFalse())
+				})
+			})
+		})
 	})
 
-	Describe("GetConfig", func() {
-		It("returns config of build pipeline", func() {
-			build, err := pipelineDB.CreateJobBuild("some-job")
+	Describe("Resources", func() {
+		It("can get (no) resources from a one-off build", func() {
+			oneOffBuild, err := team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+
+			inputs, outputs, err := oneOffBuild.Resources()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(inputs).To(BeEmpty())
+			Expect(outputs).To(BeEmpty())
+		})
+	})
+
+	Describe("UseInput", func() {
+		var build db.Build
+		BeforeEach(func() {
+			pipelineConfig := atc.Config{
+				Jobs: atc.JobConfigs{
+					{
+						Name: "some-job",
+					},
+				},
+				Resources: atc.ResourceConfigs{
+					{
+						Name: "some-resource",
+						Type: "some-type",
+					},
+					{
+						Name: "some-other-resource",
+						Type: "some-other-type",
+					},
+					{
+						Name: "weird",
+						Type: "type",
+					},
+				},
+			}
+
+			var err error
+			pipeline, _, err := team.SavePipeline("some-pipeline", pipelineConfig, db.ConfigVersion(1), db.PipelineUnpaused)
 			Expect(err).ToNot(HaveOccurred())
 
-			actualConfig, actualConfigVersion, err := build.GetConfig()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(actualConfig).To(Equal(pipelineConfig))
-			Expect(actualConfigVersion).To(Equal(db.ConfigVersion(1)))
+			job, found, err := pipeline.Job("some-job")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			build, err = job.CreateBuild()
+			Expect(err).ToNot(HaveOccurred())
+
+			versionedResource := db.VersionedResource{
+				Resource: "some-resource",
+				Type:     "some-type",
+				Version: db.ResourceVersion{
+					"some": "version",
+				},
+				Metadata: []db.ResourceMetadataField{
+					{
+						Name:  "meta1",
+						Value: "data1",
+					},
+					{
+						Name:  "meta2",
+						Value: "data2",
+					},
+				},
+			}
+			err = build.SaveInput(db.BuildInput{
+				Name:              "some-input",
+				VersionedResource: versionedResource,
+			})
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("uses provided build inputs", func() {
+			someVersionedResource := db.VersionedResource{
+				Resource: "some-other-resource",
+				Type:     "some-other-type",
+				Version: db.ResourceVersion{
+					"some": "weird-version",
+				},
+				Metadata: []db.ResourceMetadataField{
+					{
+						Name:  "meta3",
+						Value: "data3",
+					},
+				},
+			}
+
+			someWeirdResource := db.VersionedResource{
+				Resource: "weird",
+				Type:     "type",
+			}
+			var err error
+			err = build.UseInputs([]db.BuildInput{
+				{
+					Name:              "some-other-input",
+					VersionedResource: someVersionedResource,
+				},
+				{
+					Name:              "some-weird-input",
+					VersionedResource: someWeirdResource,
+				},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			actualBuildInput, err := build.GetVersionedResources()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(actualBuildInput)).To(Equal(2))
+			Expect(actualBuildInput[0].VersionedResource).To(Equal(someVersionedResource))
+			Expect(actualBuildInput[1].VersionedResource).To(Equal(someWeirdResource))
 		})
 	})
 
-	Describe("GetPipeline", func() {
-		Context("when build belongs to pipeline", func() {
-			It("returns the pipeline", func() {
-				build, err := pipelineDB.CreateJobBuild("some-job")
-				Expect(err).ToNot(HaveOccurred())
+	Describe("FinishWithError", func() {
+		var cause error
+		var build db.Build
 
-				buildPipeline, err := build.GetPipeline()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(buildPipeline).To(Equal(pipeline))
-			})
+		BeforeEach(func() {
+			var err error
+			build, err = team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
 		})
 
-		Context("when build is one off", func() {
-			It("returns empty pipeline", func() {
-				build, err := teamDB.CreateOneOffBuild()
-				Expect(err).ToNot(HaveOccurred())
+		JustBeforeEach(func() {
+			cause = errors.New("disaster")
+			err := build.FinishWithError(cause)
+			Expect(err).NotTo(HaveOccurred())
+		})
 
-				buildPipeline, err := build.GetPipeline()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(buildPipeline).To(Equal(db.SavedPipeline{}))
-			})
+		It("creates Error event", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusErrored))
+
+			events, err := build.Events(0)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer events.Close()
+
+			Expect(events.Next()).To(Equal(envelope(event.Error{
+				Message: "disaster",
+			})))
+		})
+
+		It("updates build status", func() {
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.Status()).To(Equal(db.BuildStatusErrored))
 		})
 	})
 })

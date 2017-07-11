@@ -1,48 +1,92 @@
-hash: c8b54252912431f5734ac06c8b055637fb0a86128b09da79ff51f16b364e0e1d
-updated: 2017-01-05T15:18:10.057303139-05:00
+hash: 8b5e41fc32a2574b23100b5948e290b7ce295b579b60fc33acb04171d75f5402
+updated: 2017-07-11T16:25:39.585275392-04:00
 imports:
 - name: code.cloudfoundry.org/lager
-  version: 62951a8009ab331bb21dc418074fa54e66eb9b6a
+  version: dfcbcba2dd4a5228c43b0292d219d5c010daed3a
+  subpackages:
+  - lagerctx
+  - lagertest
+- name: code.cloudfoundry.org/urljoiner
+  version: 5cabba6c0a5085a9d07c2c54e01df65c6122e450
 - name: github.com/bmizerany/pat
   version: c068ca2f0aacee5ac3681d68e4d0a003b7d1fd2c
 - name: github.com/cloudfoundry-community/go-cfclient
-  version: 7b15efc43291ece6f107ed34f9684ff5f6454de3
+  version: f665a3d45ceda413fa12ca311b4b356aa3ec14ce
 - name: github.com/concourse/atc
-  version: 6085c91ef07ca0596bdf791a2801aaa84e467d8c
+  version: 8dbc6e983536f4abd6ab4d078b2a2a3512eee62c
   subpackages:
+  - auth/provider
+  - auth/routes
+  - auth/uaa
+  - auth/verifier
   - event
 - name: github.com/concourse/go-concourse
-  version: b78e4c86d2e9663cb9bb72d03ea0a6795383c8aa
+  version: 1ee593ba9a1ce4bbd21e6ca279e63dfc24ab022c
   subpackages:
   - concourse
   - concourse/eventstream
   - concourse/internal
+- name: github.com/dgrijalva/jwt-go
+  version: a539ee1a749a2b895533f979515ac7e6e0f5b650
 - name: github.com/golang/protobuf
-  version: 7cc19b78d562895b13596ddce7aafb59dd789318
+  version: 8ee79997227bf9b34611aee7946ae64735e6fd93
   subpackages:
   - proto
 - name: github.com/gorilla/context
-  version: a8d44e7d8e4d532b6a27a02dd82abb31cc1b01bd
+  version: 215affda49addc4c8ef7e2534915df2c8c35c6cd
 - name: github.com/gorilla/mux
   version: cf79e51a62d8219d52060dfc1b4e810414ba2d15
 - name: github.com/hashicorp/errwrap
   version: 7554cd9344cec97297fa6649b055a8c98c2a1e55
 - name: github.com/hashicorp/go-multierror
-  version: ed905158d87462226a13fe39ddf685ea65f1c11f
+  version: 83588e72410abfbe4df460eeb6f30841ae47d4c4
+- name: github.com/jessevdk/go-flags
+  version: 5695738f733662da3e9afc2283bba6f3c879002d
 - name: github.com/kelseyhightower/envconfig
-  version: 9aca109c9aec4633fced9717c4a09ecab3d33111
+  version: f611eb38b3875cc3bd991ca91c51d06446afa14c
 - name: github.com/mitchellh/mapstructure
-  version: d2dd0262208475919e1a362f675cfc0e7c10e905
+  version: d0303fe809921458f417bcf828397a65db30a7e4
 - name: github.com/onsi/ginkgo
-  version: 5437a97bf824dec14e58d68c56ee36e772670c2e
+  version: 43e2af1f01ace55adbb6d7d0f30416476db1baae
+  subpackages:
+  - config
+  - internal/codelocation
+  - internal/containernode
+  - internal/failer
+  - internal/leafnodes
+  - internal/remote
+  - internal/spec
+  - internal/specrunner
+  - internal/suite
+  - internal/testingtproxy
+  - internal/writer
+  - reporters
+  - reporters/stenographer
+  - types
 - name: github.com/onsi/gomega
-  version: c73e51675ad2455a4515b6213eb7145eaade4824
+  version: c90bd38f8da6e92f8b114953db2f0ad7361fb4b4
+  subpackages:
+  - format
+  - gbytes
+  - ghttp
+  - internal/assertion
+  - internal/asyncassertion
+  - internal/oraclematcher
+  - internal/testingtsupport
+  - matchers
+  - matchers/support/goraph/bipartitegraph
+  - matchers/support/goraph/edge
+  - matchers/support/goraph/node
+  - matchers/support/goraph/util
+  - types
 - name: github.com/peterhellberg/link
-  version: d1cebc7ea14a5fc0de7cb4a45acae773161642c6
+  version: 3eea38ca14b7b3252feea5daf92be3864209eb1d
 - name: github.com/pivotal-cf/brokerapi
-  version: 3dcb3e88faf1f81359679aa1b931df45d30f01de
+  version: 6d25b9398d9f05880ca8f480134a88c8d2df69bc
   subpackages:
   - auth
+- name: github.com/pkg/errors
+  version: bfd5150e4e41705ded2129ec33379de1cb90b513
 - name: github.com/tedsuo/rata
   version: 0649c23705dfb45a9693b668c4fc1c0666f485d9
 - name: github.com/vito/go-sse
@@ -58,8 +102,12 @@ imports:
   subpackages:
   - clientcredentials
   - internal
+- name: golang.org/x/sys
+  version: a408501be4d17ee978c04a618e7a1b22af058c0e
+  subpackages:
+  - unix
 - name: google.golang.org/appengine
-  version: e234e71924d4aa52444bc76f2f831f13fa1eca60
+  version: ad2570cd3913654e00c5f0183b39d2f998e54046
   subpackages:
   - internal
   - internal/base

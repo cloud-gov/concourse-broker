@@ -34,10 +34,9 @@ var _ = Describe("Plan", func() {
 						Type:     "type",
 						Name:     "name",
 						Resource: "resource",
-						Pipeline: "pipeline",
 						Source:   atc.Source{"some": "source"},
 						Params:   atc.Params{"some": "params"},
-						Version:  atc.Version{"some": "version"},
+						Version:  &atc.Version{"some": "version"},
 						Tags:     atc.Tags{"tags"},
 					},
 				},
@@ -48,7 +47,6 @@ var _ = Describe("Plan", func() {
 						Type:     "type",
 						Name:     "name",
 						Resource: "resource",
-						Pipeline: "pipeline",
 						Source:   atc.Source{"some": "source"},
 						Params:   atc.Params{"some": "params"},
 						Tags:     atc.Tags{"tags"},
@@ -65,7 +63,6 @@ var _ = Describe("Plan", func() {
 						Config: &atc.TaskConfig{
 							Params: map[string]string{"some": "secret"},
 						},
-						Pipeline: "pipeline",
 					},
 				},
 
@@ -160,19 +157,6 @@ var _ = Describe("Plan", func() {
 								},
 							},
 						},
-					},
-				},
-
-				atc.Plan{
-					ID: "17",
-					DependentGet: &atc.DependentGetPlan{
-						Type:     "type",
-						Name:     "name",
-						Resource: "resource",
-						Pipeline: "pipeline",
-						Source:   atc.Source{"some": "source"},
-						Params:   atc.Params{"some": "params"},
-						Tags:     atc.Tags{"tags"},
 					},
 				},
 
@@ -357,14 +341,6 @@ var _ = Describe("Plan", func() {
             "privileged": false
           }
         }
-      }
-    },
-    {
-      "id": "17",
-      "dependent_get": {
-        "type": "type",
-        "name": "name",
-        "resource": "resource"
       }
     },
     {

@@ -8,7 +8,6 @@ import (
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/scheduler/maxinflight"
-	"github.com/concourse/atc/scheduler/maxinflight/maxinflightfakes"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -16,14 +15,16 @@ import (
 
 var _ = Describe("Updater", func() {
 	var (
-		fakeDB   *maxinflightfakes.FakeUpdaterDB
-		updater  maxinflight.Updater
-		disaster error
+		fakePipeline *dbfakes.FakePipeline
+		fakeJob      *dbfakes.FakeJob
+		updater      maxinflight.Updater
+		disaster     error
 	)
 
 	BeforeEach(func() {
-		fakeDB = new(maxinflightfakes.FakeUpdaterDB)
-		updater = maxinflight.NewUpdater(fakeDB)
+		fakePipeline = new(dbfakes.FakePipeline)
+		fakeJob = new(dbfakes.FakeJob)
+		updater = maxinflight.NewUpdater(fakePipeline)
 		disaster = errors.New("bad thing")
 	})
 
@@ -34,13 +35,16 @@ var _ = Describe("Updater", func() {
 		var reached bool
 
 		JustBeforeEach(func() {
+			fakeJob.NameReturns("some-job")
+			fakeJob.ConfigReturns(atc.JobConfig{
+				Name:           "some-job",
+				SerialGroups:   serialGroups,
+				RawMaxInFlight: rawMaxInFlight,
+			})
+
 			reached, updateErr = updater.UpdateMaxInFlightReached(
 				lagertest.NewTestLogger("test"),
-				atc.JobConfig{
-					Name:           "some-job",
-					SerialGroups:   serialGroups,
-					RawMaxInFlight: rawMaxInFlight,
-				},
+				fakeJob,
 				57,
 			)
 		})
@@ -49,9 +53,8 @@ var _ = Describe("Updater", func() {
 			It("returns false and no error", func() {
 				Expect(updateErr).NotTo(HaveOccurred())
 				Expect(reached).To(BeFalse())
-				Expect(fakeDB.SetMaxInFlightReachedCallCount()).To(Equal(1))
-				jobName, actualReached := fakeDB.SetMaxInFlightReachedArgsForCall(0)
-				Expect(jobName).To(Equal("some-job"))
+				Expect(fakeJob.SetMaxInFlightReachedCallCount()).To(Equal(1))
+				actualReached := fakeJob.SetMaxInFlightReachedArgsForCall(0)
 				Expect(actualReached).To(BeFalse())
 			})
 		}
@@ -60,9 +63,8 @@ var _ = Describe("Updater", func() {
 			It("returns true and no error", func() {
 				Expect(updateErr).NotTo(HaveOccurred())
 				Expect(reached).To(BeTrue())
-				Expect(fakeDB.SetMaxInFlightReachedCallCount()).To(Equal(1))
-				jobName, actualReached := fakeDB.SetMaxInFlightReachedArgsForCall(0)
-				Expect(jobName).To(Equal("some-job"))
+				Expect(fakeJob.SetMaxInFlightReachedCallCount()).To(Equal(1))
+				actualReached := fakeJob.SetMaxInFlightReachedArgsForCall(0)
 				Expect(actualReached).To(BeTrue())
 			})
 		}
@@ -70,7 +72,7 @@ var _ = Describe("Updater", func() {
 		itReturnsTheError := func() {
 			It("returns the error", func() {
 				Expect(updateErr).To(Equal(disaster))
-				Expect(fakeDB.SetMaxInFlightReachedCallCount()).To(Equal(0))
+				Expect(fakeJob.SetMaxInFlightReachedCallCount()).To(Equal(0))
 			})
 		}
 
@@ -83,13 +85,13 @@ var _ = Describe("Updater", func() {
 			itReturnsFalseAndNoError()
 
 			It("doesn't look at the database", func() {
-				Expect(fakeDB.GetRunningBuildsBySerialGroupCallCount()).To(BeZero())
-				Expect(fakeDB.GetNextPendingBuildBySerialGroupCallCount()).To(BeZero())
+				Expect(fakeJob.GetRunningBuildsBySerialGroupCallCount()).To(BeZero())
+				Expect(fakeJob.GetNextPendingBuildBySerialGroupCallCount()).To(BeZero())
 			})
 
 			Context("when setting max in flight reached fails", func() {
 				BeforeEach(func() {
-					fakeDB.SetMaxInFlightReachedReturns(disaster)
+					fakeJob.SetMaxInFlightReachedReturns(disaster)
 				})
 
 				It("returns the error", func() {
@@ -101,7 +103,7 @@ var _ = Describe("Updater", func() {
 		itReturnsFalseIfOurBuildIsNext := func() {
 			Context("when the build we are trying to run is no longer pending", func() {
 				BeforeEach(func() {
-					fakeDB.GetNextPendingBuildBySerialGroupReturns(nil, false, nil)
+					fakeJob.GetNextPendingBuildBySerialGroupReturns(nil, false, nil)
 				})
 
 				itReturnsTrueAndNoError()
@@ -113,7 +115,7 @@ var _ = Describe("Updater", func() {
 				BeforeEach(func() {
 					fakeBuild = new(dbfakes.FakeBuild)
 					fakeBuild.IDReturns(101)
-					fakeDB.GetNextPendingBuildBySerialGroupReturns(fakeBuild, true, nil)
+					fakeJob.GetNextPendingBuildBySerialGroupReturns(fakeBuild, true, nil)
 				})
 
 				itReturnsTrueAndNoError()
@@ -125,7 +127,7 @@ var _ = Describe("Updater", func() {
 				BeforeEach(func() {
 					fakeBuild = new(dbfakes.FakeBuild)
 					fakeBuild.IDReturns(57)
-					fakeDB.GetNextPendingBuildBySerialGroupReturns(fakeBuild, true, nil)
+					fakeJob.GetNextPendingBuildBySerialGroupReturns(fakeBuild, true, nil)
 				})
 
 				itReturnsFalseAndNoError()
@@ -140,47 +142,45 @@ var _ = Describe("Updater", func() {
 
 			Context("when looking up the running builds fails", func() {
 				BeforeEach(func() {
-					fakeDB.GetRunningBuildsBySerialGroupReturns(nil, disaster)
+					fakeJob.GetRunningBuildsBySerialGroupReturns(nil, disaster)
 				})
 
 				itReturnsTheError()
 
 				It("looked up the running builds with the right job name and serial group", func() {
-					Expect(fakeDB.GetRunningBuildsBySerialGroupCallCount()).To(Equal(1))
-					actualJobName, actualSerialGroups := fakeDB.GetRunningBuildsBySerialGroupArgsForCall(0)
-					Expect(actualJobName).To(Equal("some-job"))
+					Expect(fakeJob.GetRunningBuildsBySerialGroupCallCount()).To(Equal(1))
+					actualSerialGroups := fakeJob.GetRunningBuildsBySerialGroupArgsForCall(0)
 					Expect(actualSerialGroups).To(ConsistOf("some-job"))
 				})
 			})
 
 			Context("when there are 3 builds of the job running", func() {
 				BeforeEach(func() {
-					fakeDB.GetRunningBuildsBySerialGroupReturns([]db.Build{nil, nil, nil}, nil)
+					fakeJob.GetRunningBuildsBySerialGroupReturns([]db.Build{nil, nil, nil}, nil)
 				})
 
 				itReturnsTrueAndNoError()
 
 				It("doesn't look up the next pending build", func() {
-					Expect(fakeDB.GetNextPendingBuildBySerialGroupCallCount()).To(BeZero())
+					Expect(fakeJob.GetNextPendingBuildBySerialGroupCallCount()).To(BeZero())
 				})
 			})
 
 			Context("when there are 2 builds of the job running", func() {
 				BeforeEach(func() {
-					fakeDB.GetRunningBuildsBySerialGroupReturns([]db.Build{nil, nil}, nil)
+					fakeJob.GetRunningBuildsBySerialGroupReturns([]db.Build{nil, nil}, nil)
 				})
 
 				Context("when looking up the next pending build returns an error", func() {
 					BeforeEach(func() {
-						fakeDB.GetNextPendingBuildBySerialGroupReturns(nil, false, disaster)
+						fakeJob.GetNextPendingBuildBySerialGroupReturns(nil, false, disaster)
 					})
 
 					itReturnsTheError()
 
 					It("looked up the next pending build with the right job name and serial group", func() {
-						Expect(fakeDB.GetNextPendingBuildBySerialGroupCallCount()).To(Equal(1))
-						actualJobName, actualSerialGroups := fakeDB.GetNextPendingBuildBySerialGroupArgsForCall(0)
-						Expect(actualJobName).To(Equal("some-job"))
+						Expect(fakeJob.GetNextPendingBuildBySerialGroupCallCount()).To(Equal(1))
+						actualSerialGroups := fakeJob.GetNextPendingBuildBySerialGroupArgsForCall(0)
 						Expect(actualSerialGroups).To(ConsistOf("some-job"))
 					})
 				})
@@ -197,47 +197,45 @@ var _ = Describe("Updater", func() {
 
 			Context("when looking up the running builds fails", func() {
 				BeforeEach(func() {
-					fakeDB.GetRunningBuildsBySerialGroupReturns(nil, disaster)
+					fakeJob.GetRunningBuildsBySerialGroupReturns(nil, disaster)
 				})
 
 				itReturnsTheError()
 
 				It("looked up the running builds with the right job name and serial group", func() {
-					Expect(fakeDB.GetRunningBuildsBySerialGroupCallCount()).To(Equal(1))
-					actualJobName, actualSerialGroups := fakeDB.GetRunningBuildsBySerialGroupArgsForCall(0)
-					Expect(actualJobName).To(Equal("some-job"))
+					Expect(fakeJob.GetRunningBuildsBySerialGroupCallCount()).To(Equal(1))
+					actualSerialGroups := fakeJob.GetRunningBuildsBySerialGroupArgsForCall(0)
 					Expect(actualSerialGroups).To(ConsistOf("serial-group-1", "serial-group-2"))
 				})
 			})
 
 			Context("when a job in the serial group is running", func() {
 				BeforeEach(func() {
-					fakeDB.GetRunningBuildsBySerialGroupReturns([]db.Build{nil}, nil)
+					fakeJob.GetRunningBuildsBySerialGroupReturns([]db.Build{nil}, nil)
 				})
 
 				itReturnsTrueAndNoError()
 
 				It("doesn't look up the next pending build", func() {
-					Expect(fakeDB.GetNextPendingBuildBySerialGroupCallCount()).To(BeZero())
+					Expect(fakeJob.GetNextPendingBuildBySerialGroupCallCount()).To(BeZero())
 				})
 			})
 
 			Context("when no job in the serial group is running", func() {
 				BeforeEach(func() {
-					fakeDB.GetRunningBuildsBySerialGroupReturns([]db.Build{}, nil)
+					fakeJob.GetRunningBuildsBySerialGroupReturns([]db.Build{}, nil)
 				})
 
 				Context("when looking up the next pending build returns an error", func() {
 					BeforeEach(func() {
-						fakeDB.GetNextPendingBuildBySerialGroupReturns(nil, false, disaster)
+						fakeJob.GetNextPendingBuildBySerialGroupReturns(nil, false, disaster)
 					})
 
 					itReturnsTheError()
 
 					It("looked up the next pending build with the right job name and serial group", func() {
-						Expect(fakeDB.GetNextPendingBuildBySerialGroupCallCount()).To(Equal(1))
-						actualJobName, actualSerialGroups := fakeDB.GetNextPendingBuildBySerialGroupArgsForCall(0)
-						Expect(actualJobName).To(Equal("some-job"))
+						Expect(fakeJob.GetNextPendingBuildBySerialGroupCallCount()).To(Equal(1))
+						actualSerialGroups := fakeJob.GetNextPendingBuildBySerialGroupArgsForCall(0)
 						Expect(actualSerialGroups).To(ConsistOf("serial-group-1", "serial-group-2"))
 					})
 				})

@@ -9,6 +9,8 @@ import (
 
 	"github.com/concourse/atc/db"
 
+	"strconv"
+
 	"code.cloudfoundry.org/lager"
 )
 
@@ -24,23 +26,26 @@ type OAuthBeginHandler struct {
 	logger          lager.Logger
 	providerFactory ProviderFactory
 	privateKey      *rsa.PrivateKey
-	teamDBFactory   db.TeamDBFactory
+	teamFactory     db.TeamFactory
 	expire          time.Duration
+	isTLSEnabled    bool
 }
 
 func NewOAuthBeginHandler(
 	logger lager.Logger,
 	providerFactory ProviderFactory,
 	privateKey *rsa.PrivateKey,
-	teamDBFactory db.TeamDBFactory,
+	teamFactory db.TeamFactory,
 	expire time.Duration,
+	isTLSEnabled bool,
 ) http.Handler {
 	return &OAuthBeginHandler{
 		logger:          logger,
 		providerFactory: providerFactory,
 		privateKey:      privateKey,
-		teamDBFactory:   teamDBFactory,
+		teamFactory:     teamFactory,
 		expire:          expire,
+		isTLSEnabled:    isTLSEnabled,
 	}
 }
 
@@ -49,11 +54,12 @@ func (handler *OAuthBeginHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	providerName := r.FormValue(":provider")
 	teamName := r.FormValue("team_name")
 
-	teamDB := handler.teamDBFactory.GetTeamDB(teamName)
-	team, found, err := teamDB.GetTeam()
+	team, found, err := handler.teamFactory.FindTeam(teamName)
+
 	if err != nil {
 		hLog.Error("failed-to-get-team", err, lager.Data{
 			"teamName": teamName,
+			"provider": providerName,
 		})
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -85,6 +91,12 @@ func (handler *OAuthBeginHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	_, err = strconv.Atoi(r.FormValue("fly_local_port"))
+	if r.FormValue("fly_local_port") != "" && err != nil {
+		handler.logger.Error("failed-to-convert-port-to-integer", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
 	oauthState, err := json.Marshal(OAuthState{
 		Redirect:     r.FormValue("redirect"),
@@ -101,12 +113,18 @@ func (handler *OAuthBeginHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 
 	authCodeURL := provider.AuthCodeURL(encodedState)
 
-	http.SetCookie(w, &http.Cookie{
-		Name:    OAuthStateCookie,
-		Value:   encodedState,
-		Path:    "/",
-		Expires: time.Now().Add(handler.expire),
-	})
-
+	authCookie := &http.Cookie{
+		Name:     OAuthStateCookie,
+		Value:    encodedState,
+		Path:     "/",
+		Expires:  time.Now().Add(handler.expire),
+		HttpOnly: true,
+	}
+	if handler.isTLSEnabled {
+		authCookie.Secure = true
+	}
+	// TODO: Add SameSite once Golang supports it
+	// https://github.com/golang/go/issues/15867
+	http.SetCookie(w, authCookie)
 	http.Redirect(w, r, authCodeURL, http.StatusTemporaryRedirect)
 }

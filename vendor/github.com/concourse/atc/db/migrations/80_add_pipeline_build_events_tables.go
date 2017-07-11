@@ -3,7 +3,7 @@ package migrations
 import (
 	"fmt"
 
-	"github.com/BurntSushi/migration"
+	"github.com/concourse/atc/db/migration"
 )
 
 func AddPipelineBuildEventsTables(tx migration.LimitedTx) error {

@@ -10,18 +10,13 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) ListResources(pipelineDB db.PipelineDB) http.Handler {
+func (s *Server) ListResources(pipeline db.Pipeline) http.Handler {
 	logger := s.logger.Session("list-resources")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resources, found, err := pipelineDB.GetResources()
+		resources, err := pipeline.Resources()
 		if err != nil {
 			logger.Error("failed-to-get-dashboard-resources", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		if !found {
-			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 
@@ -34,7 +29,7 @@ func (s *Server) ListResources(pipelineDB db.PipelineDB) http.Handler {
 				presentedResources,
 				present.Resource(
 					resource,
-					pipelineDB.Config().Groups,
+					pipeline.Groups(),
 					showCheckErr,
 					teamName,
 				),

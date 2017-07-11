@@ -10,7 +10,7 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) CreateBuild(teamDB db.TeamDB) http.Handler {
+func (s *Server) CreateBuild(team db.Team) http.Handler {
 	hLog := s.logger.Session("create-build")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +22,7 @@ func (s *Server) CreateBuild(teamDB db.TeamDB) http.Handler {
 			return
 		}
 
-		build, err := teamDB.CreateOneOffBuild()
+		build, err := team.CreateOneOffBuild()
 		if err != nil {
 			hLog.Error("failed-to-create-one-off-build", err)
 			w.WriteHeader(http.StatusInternalServerError)

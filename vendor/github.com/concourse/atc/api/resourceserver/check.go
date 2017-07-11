@@ -11,7 +11,7 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-func (s *Server) CheckResource(pipelineDB db.PipelineDB) http.Handler {
+func (s *Server) CheckResource(dbPipeline db.Pipeline) http.Handler {
 	logger := s.logger.Session("check-resource")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +27,7 @@ func (s *Server) CheckResource(pipelineDB db.PipelineDB) http.Handler {
 
 		fromVersion := reqBody.From
 		if fromVersion == nil {
-			latestVersion, found, err := pipelineDB.GetLatestVersionedResource(resourceName)
+			latestVersion, found, err := dbPipeline.GetLatestVersionedResource(resourceName)
 			if err != nil {
 				logger.Info("failed-to-get-latest-versioned-resource", lager.Data{"error": err.Error()})
 				w.WriteHeader(http.StatusInternalServerError)
@@ -39,7 +39,7 @@ func (s *Server) CheckResource(pipelineDB db.PipelineDB) http.Handler {
 			}
 		}
 
-		scanner := s.scannerFactory.NewResourceScanner(pipelineDB)
+		scanner := s.scannerFactory.NewResourceScanner(dbPipeline)
 
 		err = scanner.ScanFromVersion(logger, resourceName, fromVersion)
 		switch scanErr := err.(type) {

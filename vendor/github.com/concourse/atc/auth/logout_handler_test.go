@@ -31,7 +31,7 @@ var _ = Describe("LogOutHandler", func() {
 
 		BeforeEach(func() {
 			fakeProviderFactory = new(authfakes.FakeProviderFactory)
-			fakeTeamDBFactory := new(dbfakes.FakeTeamDBFactory)
+			fakeTeamFactory := new(dbfakes.FakeTeamFactory)
 			signingKey, err = rsa.GenerateKey(rand.Reader, 1024)
 			Expect(err).ToNot(HaveOccurred())
 			expire = 24 * time.Hour
@@ -39,9 +39,10 @@ var _ = Describe("LogOutHandler", func() {
 			handler, err := auth.NewOAuthHandler(
 				lagertest.NewTestLogger("test"),
 				fakeProviderFactory,
-				fakeTeamDBFactory,
+				fakeTeamFactory,
 				signingKey,
 				expire,
+				false,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -68,7 +69,7 @@ var _ = Describe("LogOutHandler", func() {
 			Expect(len(cookies)).To(Equal(1))
 
 			deletedCookie := cookies[0]
-			Expect(deletedCookie.Name).To(Equal(auth.CookieName))
+			Expect(deletedCookie.Name).To(Equal(auth.AuthCookieName))
 			Expect(deletedCookie.MaxAge).To(Equal(-1))
 		})
 	})

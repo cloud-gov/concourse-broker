@@ -18,10 +18,10 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/ghttp"
 
+	"github.com/concourse/atc"
 	"github.com/concourse/atc/auth"
 	"github.com/concourse/atc/auth/authfakes"
 	"github.com/concourse/atc/auth/provider/providerfakes"
-	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/db/dbfakes"
 )
 
@@ -31,8 +31,8 @@ var _ = Describe("OAuthBeginHandler", func() {
 
 		fakeProviderFactory *authfakes.FakeProviderFactory
 
-		fakeTeamDBFactory *dbfakes.FakeTeamDBFactory
-		fakeTeamDB        *dbfakes.FakeTeamDB
+		fakeTeamFactory *dbfakes.FakeTeamFactory
+		fakeTeam        *dbfakes.FakeTeam
 
 		signingKey *rsa.PrivateKey
 
@@ -49,21 +49,21 @@ var _ = Describe("OAuthBeginHandler", func() {
 
 		fakeProviderFactory = new(authfakes.FakeProviderFactory)
 
-		fakeTeamDB = new(dbfakes.FakeTeamDB)
+		fakeTeam = new(dbfakes.FakeTeam)
+		fakeTeamFactory = new(dbfakes.FakeTeamFactory)
 
 		var err error
 		signingKey, err = rsa.GenerateKey(rand.Reader, 1024)
 		Expect(err).ToNot(HaveOccurred())
 		expire = 24 * time.Hour
 
-		fakeTeamDBFactory = new(dbfakes.FakeTeamDBFactory)
-		fakeTeamDBFactory.GetTeamDBReturns(fakeTeamDB)
 		handler, err := auth.NewOAuthHandler(
 			lagertest.NewTestLogger("test"),
 			fakeProviderFactory,
-			fakeTeamDBFactory,
+			fakeTeamFactory,
 			signingKey,
 			expire,
+			false,
 		)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -108,26 +108,16 @@ var _ = Describe("OAuthBeginHandler", func() {
 		})
 
 		Context("when the team exists", func() {
-			var savedTeam db.SavedTeam
 			BeforeEach(func() {
-				savedTeam = db.SavedTeam{
-					Team: db.Team{
-						GitHubAuth: &db.GitHubAuth{ClientID: "some-client-id"},
-					},
-				}
-
-				fakeTeamDB.GetTeamReturns(savedTeam, true, nil)
+				fakeTeam.NameReturns("some-team")
+				fakeTeam.BasicAuthReturns(&atc.BasicAuth{BasicAuthUsername: "some-username"})
+				fakeTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 			})
 
 			Context("to a known provider", func() {
 				BeforeEach(func() {
 					request.URL.Path = "/auth/provider-name"
 					fakeProvider.AuthCodeURLReturns(redirectTarget.URL())
-				})
-
-				It("gets the teamDB with correct teamName", func() {
-					Expect(fakeTeamDBFactory.GetTeamDBCallCount()).To(Equal(1))
-					Expect(fakeTeamDBFactory.GetTeamDBArgsForCall(0)).To(Equal("some-team"))
 				})
 
 				It("redirects to the auth code URL", func() {
@@ -180,7 +170,7 @@ var _ = Describe("OAuthBeginHandler", func() {
 			BeforeEach(func() {
 				request.URL.Path = "/auth/b"
 
-				fakeTeamDB.GetTeamReturns(db.SavedTeam{}, false, nil)
+				fakeTeamFactory.FindTeamReturns(fakeTeam, false, nil)
 			})
 
 			It("returns 404 not found", func() {
@@ -194,7 +184,7 @@ var _ = Describe("OAuthBeginHandler", func() {
 				request.URL.Path = "/auth/b"
 
 				disaster = errors.New("out of service")
-				fakeTeamDB.GetTeamReturns(db.SavedTeam{}, false, disaster)
+				fakeTeamFactory.FindTeamReturns(fakeTeam, false, disaster)
 			})
 
 			It("returns 500 internal server error", func() {

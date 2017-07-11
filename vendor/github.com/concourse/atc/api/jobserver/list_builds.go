@@ -11,7 +11,7 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) ListJobBuilds(pipelineDB db.PipelineDB) http.Handler {
+func (s *Server) ListJobBuilds(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var (
 			builds []db.Build
@@ -20,6 +20,8 @@ func (s *Server) ListJobBuilds(pipelineDB db.PipelineDB) http.Handler {
 			since  int
 			limit  int
 		)
+
+		logger := s.logger.Session("list-job-builds")
 
 		jobName := r.FormValue(":job_name")
 		teamName := r.FormValue(":team_name")
@@ -36,7 +38,19 @@ func (s *Server) ListJobBuilds(pipelineDB db.PipelineDB) http.Handler {
 			limit = atc.PaginationAPIDefaultLimit
 		}
 
-		builds, pagination, err := pipelineDB.GetJobBuilds(jobName, db.Page{
+		job, found, err := pipeline.Job(jobName)
+		if err != nil {
+			logger.Error("failed-to-get-job", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if !found {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		builds, pagination, err := job.Builds(db.Page{
 			Since: since,
 			Until: until,
 			Limit: limit,
@@ -47,11 +61,11 @@ func (s *Server) ListJobBuilds(pipelineDB db.PipelineDB) http.Handler {
 		}
 
 		if pagination.Next != nil {
-			s.addNextLink(w, teamName, pipelineDB.GetPipelineName(), jobName, *pagination.Next)
+			s.addNextLink(w, teamName, pipeline.Name(), jobName, *pagination.Next)
 		}
 
 		if pagination.Previous != nil {
-			s.addPreviousLink(w, teamName, pipelineDB.GetPipelineName(), jobName, *pagination.Previous)
+			s.addPreviousLink(w, teamName, pipeline.Name(), jobName, *pagination.Previous)
 		}
 
 		w.WriteHeader(http.StatusOK)

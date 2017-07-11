@@ -3,33 +3,33 @@ package auth
 import (
 	"net/http"
 
+	"github.com/concourse/atc/auth/provider"
 	"github.com/concourse/atc/db"
 )
 
 type teamAuthValidator struct {
-	teamDBFactory db.TeamDBFactory
-	jwtValidator  Validator
+	teamFactory  db.TeamFactory
+	jwtValidator Validator
 }
 
 func NewTeamAuthValidator(
-	teamDBFactory db.TeamDBFactory,
+	teamFactory db.TeamFactory,
 	jwtValidator Validator,
 ) Validator {
 	return &teamAuthValidator{
-		teamDBFactory: teamDBFactory,
-		jwtValidator:  jwtValidator,
+		teamFactory:  teamFactory,
+		jwtValidator: jwtValidator,
 	}
 }
 
 func (v teamAuthValidator) IsAuthenticated(r *http.Request) bool {
 	teamName := r.FormValue(":team_name")
-	teamDB := v.teamDBFactory.GetTeamDB(teamName)
-	team, found, err := teamDB.GetTeam()
+	team, found, err := v.teamFactory.FindTeam(teamName)
 	if err != nil || !found {
 		return false
 	}
 
-	if !team.IsAuthConfigured() {
+	if !isAuthConfigured(team) {
 		return true
 	}
 
@@ -38,4 +38,20 @@ func (v teamAuthValidator) IsAuthenticated(r *http.Request) bool {
 	}
 
 	return v.jwtValidator.IsAuthenticated(r)
+
+}
+
+func isAuthConfigured(t db.Team) bool {
+	if t.BasicAuth() != nil {
+		return true
+	}
+
+	for name := range provider.GetProviders() {
+		_, configured := t.Auth()[name]
+		if configured {
+			return true
+		}
+	}
+
+	return false
 }

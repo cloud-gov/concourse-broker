@@ -2,10 +2,11 @@ package resource
 
 import (
 	"os"
-	"time"
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/creds"
+	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/worker"
 )
 
@@ -15,12 +16,12 @@ type FetchSourceProviderFactory interface {
 	NewFetchSourceProvider(
 		logger lager.Logger,
 		session Session,
+		metadata Metadata,
 		tags atc.Tags,
 		teamID int,
-		resourceTypes atc.ResourceTypes,
-		cacheIdentifier CacheIdentifier,
-		resourceOptions ResourceOptions,
-		containerCreator FetchContainerCreator,
+		resourceTypes creds.VersionedResourceTypes,
+		resourceInstance ResourceInstance,
+		imageFetchingDelegate worker.ImageFetchingDelegate,
 	) FetchSourceProvider
 }
 
@@ -33,102 +34,103 @@ type FetchSourceProvider interface {
 //go:generate counterfeiter . FetchSource
 
 type FetchSource interface {
-	IsInitialized() (bool, error)
 	LockName() (string, error)
-	VersionedSource() VersionedSource
-	Initialize(signals <-chan os.Signal, ready chan<- struct{}) error
-	Release(*time.Duration)
+	Find() (VersionedSource, bool, error)
+	Create(signals <-chan os.Signal, ready chan<- struct{}) (VersionedSource, error)
 }
 
 type fetchSourceProviderFactory struct {
-	workerClient worker.Client
+	workerClient           worker.Client
+	dbResourceCacheFactory db.ResourceCacheFactory
 }
 
-func NewFetchSourceProviderFactory(workerClient worker.Client) FetchSourceProviderFactory {
+func NewFetchSourceProviderFactory(
+	workerClient worker.Client,
+	dbResourceCacheFactory db.ResourceCacheFactory,
+) FetchSourceProviderFactory {
 	return &fetchSourceProviderFactory{
-		workerClient: workerClient,
+		workerClient:           workerClient,
+		dbResourceCacheFactory: dbResourceCacheFactory,
 	}
 }
 
 func (f *fetchSourceProviderFactory) NewFetchSourceProvider(
 	logger lager.Logger,
 	session Session,
+	metadata Metadata,
 	tags atc.Tags,
 	teamID int,
-	resourceTypes atc.ResourceTypes,
-	cacheIdentifier CacheIdentifier,
-	resourceOptions ResourceOptions,
-	containerCreator FetchContainerCreator,
+	resourceTypes creds.VersionedResourceTypes,
+	resourceInstance ResourceInstance,
+	imageFetchingDelegate worker.ImageFetchingDelegate,
 ) FetchSourceProvider {
 	return &fetchSourceProvider{
-		logger:           logger,
-		session:          session,
-		tags:             tags,
-		teamID:           teamID,
-		resourceTypes:    resourceTypes,
-		cacheIdentifier:  cacheIdentifier,
-		resourceOptions:  resourceOptions,
-		containerCreator: containerCreator,
-		workerClient:     f.workerClient,
+		logger:                 logger,
+		session:                session,
+		metadata:               metadata,
+		tags:                   tags,
+		teamID:                 teamID,
+		resourceTypes:          resourceTypes,
+		resourceInstance:       resourceInstance,
+		imageFetchingDelegate:  imageFetchingDelegate,
+		workerClient:           f.workerClient,
+		dbResourceCacheFactory: f.dbResourceCacheFactory,
 	}
 }
 
 type fetchSourceProvider struct {
-	logger           lager.Logger
-	session          Session
-	tags             atc.Tags
-	teamID           int
-	resourceTypes    atc.ResourceTypes
-	cacheIdentifier  CacheIdentifier
-	resourceOptions  ResourceOptions
-	workerClient     worker.Client
-	containerCreator FetchContainerCreator
+	logger                 lager.Logger
+	session                Session
+	metadata               Metadata
+	tags                   atc.Tags
+	teamID                 int
+	resourceTypes          creds.VersionedResourceTypes
+	resourceInstance       ResourceInstance
+	workerClient           worker.Client
+	imageFetchingDelegate  worker.ImageFetchingDelegate
+	dbResourceCacheFactory db.ResourceCacheFactory
 }
 
 func (f *fetchSourceProvider) Get() (FetchSource, error) {
-	container, found, err := f.workerClient.FindContainerForIdentifier(f.logger, f.session.ID)
-	if err != nil {
-		f.logger.Error("failed-to-look-for-existing-container", err)
-		return nil, err
-	}
-
-	if found {
-		return NewContainerFetchSource(f.logger, container, f.resourceOptions), nil
-	}
-
 	resourceSpec := worker.WorkerSpec{
-		ResourceType: string(f.resourceOptions.ResourceType()),
+		ResourceType: string(f.resourceInstance.ResourceType()),
 		Tags:         f.tags,
 		TeamID:       f.teamID,
 	}
 
-	chosenWorker, err := f.workerClient.Satisfying(resourceSpec, f.resourceTypes)
+	chosenWorker, err := f.workerClient.Satisfying(f.logger.Session("fetch-source-provider"), resourceSpec, f.resourceTypes)
 	if err != nil {
 		f.logger.Error("no-workers-satisfying-spec", err)
 		return nil, err
 	}
 
-	cachedVolume, cacheFound, err := f.cacheIdentifier.FindOn(f.logger, chosenWorker)
+	resourceCache, err := f.dbResourceCacheFactory.FindOrCreateResourceCache(
+		f.logger,
+		f.resourceInstance.ResourceUser(),
+		string(f.resourceInstance.ResourceType()),
+		f.resourceInstance.Version(),
+		f.resourceInstance.Source(),
+		f.resourceInstance.Params(),
+		f.resourceTypes,
+	)
 	if err != nil {
-		f.logger.Error("failed-to-look-for-cache", err)
+		f.logger.Error("failed-to-get-resource-cache", err, lager.Data{"user": f.resourceInstance.ResourceUser()})
 		return nil, err
 	}
 
-	if cacheFound {
-		return NewVolumeFetchSource(
-			f.logger,
-			cachedVolume,
-			chosenWorker,
-			f.resourceOptions,
-			f.containerCreator,
-		), nil
-	}
+	f.logger.Debug("initializing-resource-instance-fetch-source", lager.Data{"resource-cache": resourceCache})
 
-	return NewEmptyFetchSource(
+	return NewResourceInstanceFetchSource(
 		f.logger,
+		resourceCache,
+		f.resourceInstance,
 		chosenWorker,
-		f.cacheIdentifier,
-		f.containerCreator,
-		f.resourceOptions,
+		f.resourceTypes,
+		f.tags,
+		f.teamID,
+		f.session,
+		f.metadata,
+		f.imageFetchingDelegate,
+		f.dbResourceCacheFactory,
 	), nil
 }

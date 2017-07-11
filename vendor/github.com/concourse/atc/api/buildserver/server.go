@@ -2,7 +2,6 @@ package buildserver
 
 import (
 	"net/http"
-	"time"
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/auth"
@@ -13,12 +12,6 @@ import (
 
 type EventHandlerFactory func(lager.Logger, db.Build) http.Handler
 
-//go:generate counterfeiter . BuildsDB
-
-type BuildsDB interface {
-	GetPublicBuilds(page db.Page) ([]db.Build, db.Pagination, error)
-}
-
 type Server struct {
 	logger lager.Logger
 
@@ -26,13 +19,11 @@ type Server struct {
 
 	engine              engine.Engine
 	workerClient        worker.Client
-	teamDBFactory       db.TeamDBFactory
-	buildsDB            BuildsDB
+	teamFactory         db.TeamFactory
+	buildFactory        db.BuildFactory
 	eventHandlerFactory EventHandlerFactory
 	drain               <-chan struct{}
 	rejector            auth.Rejector
-
-	httpClient *http.Client
 }
 
 func NewServer(
@@ -40,8 +31,8 @@ func NewServer(
 	externalURL string,
 	engine engine.Engine,
 	workerClient worker.Client,
-	teamDBFactory db.TeamDBFactory,
-	buildsDB BuildsDB,
+	teamFactory db.TeamFactory,
+	buildFactory db.BuildFactory,
 	eventHandlerFactory EventHandlerFactory,
 	drain <-chan struct{},
 ) *Server {
@@ -52,17 +43,11 @@ func NewServer(
 
 		engine:              engine,
 		workerClient:        workerClient,
-		teamDBFactory:       teamDBFactory,
-		buildsDB:            buildsDB,
+		teamFactory:         teamFactory,
+		buildFactory:        buildFactory,
 		eventHandlerFactory: eventHandlerFactory,
 		drain:               drain,
 
 		rejector: auth.UnauthorizedRejector{},
-
-		httpClient: &http.Client{
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: 5 * time.Minute,
-			},
-		},
 	}
 }

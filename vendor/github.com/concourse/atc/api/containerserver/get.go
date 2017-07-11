@@ -9,7 +9,7 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) GetContainer(teamDB db.TeamDB) http.Handler {
+func (s *Server) GetContainer(team db.Team) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handle := r.FormValue(":id")
 
@@ -17,7 +17,7 @@ func (s *Server) GetContainer(teamDB db.TeamDB) http.Handler {
 			"handle": handle,
 		})
 
-		container, found, err := teamDB.GetContainer(handle)
+		container, found, err := team.FindContainerByHandle(handle)
 		if err != nil {
 			hLog.Error("failed-to-lookup-container", err)
 			w.WriteHeader(http.StatusInternalServerError)

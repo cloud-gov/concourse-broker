@@ -5,9 +5,9 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func Team(savedTeam db.SavedTeam) atc.Team {
+func Team(team db.Team) atc.Team {
 	return atc.Team{
-		ID:   savedTeam.ID,
-		Name: savedTeam.Name,
+		ID:   team.ID(),
+		Name: team.Name(),
 	}
 }

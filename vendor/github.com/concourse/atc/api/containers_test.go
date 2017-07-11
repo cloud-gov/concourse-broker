@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -20,54 +19,61 @@ import (
 
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/worker/workerfakes"
 )
 
 var _ = Describe("Containers API", func() {
 	var (
-		pipelineName     = "some-pipeline"
-		jobName          = "some-job"
 		stepType         = db.ContainerTypeTask
 		stepName         = "some-step"
-		resourceName     = "some-resource"
-		buildID          = 1234
-		buildName        = "2"
-		handle           = "some-handle"
-		workerName       = "some-worker-guid"
+		pipelineID       = 1111
+		jobID            = 2222
+		buildID          = 3333
 		workingDirectory = "/tmp/build/my-favorite-guid"
-		envVariables     = []string{"VAR1=VAL1"}
-		attempts         = []int{1, 5}
+		attempt          = "1.5"
 		user             = "snoopy"
 
 		req *http.Request
 
-		fakeContainer1 db.SavedContainer
+		fakeContainer1 *dbfakes.FakeContainer
+		fakeContainer2 *dbfakes.FakeContainer
 	)
 
 	BeforeEach(func() {
-		fakeContainer1 = db.SavedContainer{
-			Container: db.Container{
-				ContainerIdentifier: db.ContainerIdentifier{
-					BuildID: buildID,
-				},
-				ContainerMetadata: db.ContainerMetadata{
-					StepName:             stepName,
-					PipelineName:         pipelineName,
-					JobName:              jobName,
-					BuildName:            buildName,
-					Type:                 stepType,
-					WorkerName:           workerName,
-					WorkingDirectory:     workingDirectory,
-					EnvironmentVariables: envVariables,
-					Attempts:             attempts,
-					User:                 user,
-					Handle:               handle,
-				},
-			},
+		fakeContainer1 = new(dbfakes.FakeContainer)
+		fakeContainer1.HandleReturns("some-handle")
+		fakeContainer1.WorkerNameReturns("some-worker-name")
+		fakeContainer1.MetadataReturns(db.ContainerMetadata{
+			Type: stepType,
 
-			TTL:       5 * time.Minute,
-			ExpiresIn: 2 * time.Minute,
-		}
+			StepName: stepName,
+			Attempt:  attempt,
+
+			PipelineID: pipelineID,
+			JobID:      jobID,
+			BuildID:    buildID,
+
+			WorkingDirectory: workingDirectory,
+			User:             user,
+		})
+
+		fakeContainer2 = new(dbfakes.FakeContainer)
+		fakeContainer2.HandleReturns("some-other-handle")
+		fakeContainer2.WorkerNameReturns("some-other-worker-name")
+		fakeContainer2.MetadataReturns(db.ContainerMetadata{
+			Type: stepType,
+
+			StepName: stepName + "-other",
+			Attempt:  attempt + ".1",
+
+			PipelineID: pipelineID + 1,
+			JobID:      jobID + 1,
+			BuildID:    buildID + 1,
+
+			WorkingDirectory: workingDirectory + "/other",
+			User:             user + "-other",
+		})
 	})
 
 	Describe("GET /api/v1/containers", func() {
@@ -76,12 +82,11 @@ var _ = Describe("Containers API", func() {
 			req, err = http.NewRequest("GET", server.URL+"/api/v1/containers", nil)
 			Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "application/json")
-			teamDBFactory.GetTeamDBReturns(teamDB)
 		})
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -94,38 +99,14 @@ var _ = Describe("Containers API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("some-team", true, true)
 			})
 
 			Context("with no params", func() {
 				Context("when no errors are returned", func() {
-					var (
-						fakeContainer2 db.SavedContainer
-						fakeContainers []db.SavedContainer
-					)
-
 					BeforeEach(func() {
-						fakeContainer2 = db.SavedContainer{
-							Container: db.Container{
-								ContainerMetadata: db.ContainerMetadata{
-									PipelineName: "some-other-pipeline",
-									Type:         db.ContainerTypeCheck,
-									ResourceName: "some-resource",
-									WorkerName:   "some-other-worker-guid",
-									Handle:       "some-other-handle",
-								},
-							},
-
-							TTL:       0,
-							ExpiresIn: 0,
-						}
-
-						fakeContainers = []db.SavedContainer{
-							fakeContainer1,
-							fakeContainer2,
-						}
-						teamDB.FindContainersByDescriptorsReturns(fakeContainers, nil)
+						dbTeam.FindContainersByMetadataReturns([]db.Container{fakeContainer1, fakeContainer2}, nil)
 					})
 
 					It("returns 200", func() {
@@ -153,27 +134,27 @@ var _ = Describe("Containers API", func() {
 							[
 								{
 									"id": "some-handle",
-									"ttl_in_seconds": 120,
-									"validity_in_seconds": 300,
-									"worker_name": "some-worker-guid",
-									"pipeline_name": "some-pipeline",
-									"job_name": "some-job",
-									"build_name": "2",
-									"build_id": 1234,
-									"step_type": "task",
+									"worker_name": "some-worker-name",
+									"type": "task",
 									"step_name": "some-step",
+									"attempt": "1.5",
+									"pipeline_id": 1111,
+									"job_id": 2222,
+									"build_id": 3333,
 									"working_directory": "/tmp/build/my-favorite-guid",
-									"env_variables": ["VAR1=VAL1"],
-									"attempt": [1,5],
 									"user": "snoopy"
 								},
 								{
 									"id": "some-other-handle",
-									"ttl_in_seconds": 0,
-									"validity_in_seconds": 0,
-									"worker_name": "some-other-worker-guid",
-									"pipeline_name": "some-other-pipeline",
-									"resource_name": "some-resource"
+									"worker_name": "some-other-worker-name",
+									"type": "task",
+									"step_name": "some-step-other",
+									"attempt": "1.5.1",
+									"pipeline_id": 1112,
+									"job_id": 2223,
+									"build_id": 3334,
+									"working_directory": "/tmp/build/my-favorite-guid/other",
+									"user": "snoopy-other"
 								}
 							]
 						`))
@@ -182,7 +163,7 @@ var _ = Describe("Containers API", func() {
 
 				Context("when no containers are found", func() {
 					BeforeEach(func() {
-						teamDB.FindContainersByDescriptorsReturns([]db.SavedContainer{}, nil)
+						dbTeam.FindContainersByMetadataReturns([]db.Container{}, nil)
 					})
 
 					It("returns 200", func() {
@@ -212,7 +193,7 @@ var _ = Describe("Containers API", func() {
 
 					BeforeEach(func() {
 						expectedErr = errors.New("some error")
-						teamDB.FindContainersByDescriptorsReturns([]db.SavedContainer{}, expectedErr)
+						dbTeam.FindContainersByMetadataReturns(nil, expectedErr)
 					})
 
 					It("returns 500", func() {
@@ -224,45 +205,43 @@ var _ = Describe("Containers API", func() {
 				})
 			})
 
-			Describe("querying with pipeline name", func() {
+			Describe("querying with pipeline id", func() {
 				BeforeEach(func() {
 					req.URL.RawQuery = url.Values{
-						"pipeline_name": []string{pipelineName},
+						"pipeline_id": []string{strconv.Itoa(pipelineID)},
 					}.Encode()
 				})
 
-				It("queries the db via the pipeline name", func() {
+				It("queries with it in the metadata", func() {
 					_, err := client.Do(req)
 					Expect(err).NotTo(HaveOccurred())
 
-					expectedArgs := db.Container{
-						ContainerMetadata: db.ContainerMetadata{
-							PipelineName: pipelineName,
-						},
-					}
-					Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-					Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
+					Expect(dbTeam.FindContainersByMetadataCallCount()).To(Equal(1))
+
+					meta := dbTeam.FindContainersByMetadataArgsForCall(0)
+					Expect(meta).To(Equal(db.ContainerMetadata{
+						PipelineID: pipelineID,
+					}))
 				})
 			})
 
-			Describe("querying with job name", func() {
+			Describe("querying with job id", func() {
 				BeforeEach(func() {
 					req.URL.RawQuery = url.Values{
-						"job_name": []string{jobName},
+						"job_id": []string{strconv.Itoa(jobID)},
 					}.Encode()
 				})
 
-				It("calls db.Containers with the queried job name", func() {
+				It("queries with it in the metadata", func() {
 					_, err := client.Do(req)
 					Expect(err).NotTo(HaveOccurred())
 
-					expectedArgs := db.Container{
-						ContainerMetadata: db.ContainerMetadata{
-							JobName: jobName,
-						},
-					}
-					Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-					Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
+					Expect(dbTeam.FindContainersByMetadataCallCount()).To(Equal(1))
+
+					meta := dbTeam.FindContainersByMetadataArgsForCall(0)
+					Expect(meta).To(Equal(db.ContainerMetadata{
+						JobID: jobID,
+					}))
 				})
 			})
 
@@ -273,110 +252,59 @@ var _ = Describe("Containers API", func() {
 					}.Encode()
 				})
 
-				It("calls db.Containers with the queried type", func() {
+				It("queries with it in the metadata", func() {
 					_, err := client.Do(req)
 					Expect(err).NotTo(HaveOccurred())
 
-					expectedArgs := db.Container{
-						ContainerMetadata: db.ContainerMetadata{
-							Type: stepType,
-						},
-					}
-					Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-					Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
-				})
-			})
-
-			Describe("querying with resource name", func() {
-				BeforeEach(func() {
-					req.URL.RawQuery = url.Values{
-						"resource_name": []string{string(resourceName)},
-					}.Encode()
-				})
-
-				It("calls db.Containers with the queried resource name", func() {
-					_, err := client.Do(req)
-					Expect(err).NotTo(HaveOccurred())
-
-					expectedArgs := db.Container{
-						ContainerMetadata: db.ContainerMetadata{
-							ResourceName: resourceName,
-						},
-					}
-					Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-					Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
+					meta := dbTeam.FindContainersByMetadataArgsForCall(0)
+					Expect(meta).To(Equal(db.ContainerMetadata{
+						Type: stepType,
+					}))
 				})
 			})
 
 			Describe("querying with step name", func() {
 				BeforeEach(func() {
 					req.URL.RawQuery = url.Values{
-						"step_name": []string{string(stepName)},
+						"step_name": []string{stepName},
 					}.Encode()
 				})
 
-				It("calls db.Containers with the queried step name", func() {
+				It("queries with it in the metadata", func() {
 					_, err := client.Do(req)
 					Expect(err).NotTo(HaveOccurred())
 
-					expectedArgs := db.Container{
-						ContainerMetadata: db.ContainerMetadata{
-							StepName: stepName,
-						},
-					}
-					Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-					Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
+					meta := dbTeam.FindContainersByMetadataArgsForCall(0)
+					Expect(meta).To(Equal(db.ContainerMetadata{
+						StepName: stepName,
+					}))
 				})
 			})
 
-			Describe("querying with build name", func() {
-				BeforeEach(func() {
-					req.URL.RawQuery = url.Values{
-						"build_name": []string{buildName},
-					}.Encode()
-				})
-
-				It("calls db.Containers with the queried build name", func() {
-					_, err := client.Do(req)
-					Expect(err).NotTo(HaveOccurred())
-
-					expectedArgs := db.Container{
-						ContainerMetadata: db.ContainerMetadata{
-							BuildName: buildName,
-						},
-					}
-					Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-					Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
-				})
-			})
-
-			Describe("querying with build-id", func() {
+			Describe("querying with build id", func() {
 				Context("when the buildID can be parsed as an int", func() {
 					BeforeEach(func() {
 						buildIDString := strconv.Itoa(buildID)
 
 						req.URL.RawQuery = url.Values{
-							"build-id": []string{buildIDString},
+							"build_id": []string{buildIDString},
 						}.Encode()
 					})
 
-					It("calls db.Containers with the queried build id", func() {
+					It("queries with it in the metadata", func() {
 						_, err := client.Do(req)
 						Expect(err).NotTo(HaveOccurred())
 
-						expectedArgs := db.Container{
-							ContainerIdentifier: db.ContainerIdentifier{
-								BuildID: buildID,
-							},
-						}
-						Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-						Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
+						meta := dbTeam.FindContainersByMetadataArgsForCall(0)
+						Expect(meta).To(Equal(db.ContainerMetadata{
+							BuildID: buildID,
+						}))
 					})
 
 					Context("when the buildID fails to be parsed as an int", func() {
 						BeforeEach(func() {
 							req.URL.RawQuery = url.Values{
-								"build-id": []string{"not-an-int"},
+								"build_id": []string{"not-an-int"},
 							}.Encode()
 						})
 
@@ -388,7 +316,7 @@ var _ = Describe("Containers API", func() {
 						It("does not lookup containers", func() {
 							client.Do(req)
 
-							Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(0))
+							Expect(dbTeam.FindContainersByMetadataCallCount()).To(Equal(0))
 						})
 					})
 				})
@@ -397,52 +325,50 @@ var _ = Describe("Containers API", func() {
 			Describe("querying with attempts", func() {
 				Context("when the attempts can be parsed as a slice of int", func() {
 					BeforeEach(func() {
-						attemptsString := "[1,5]"
-
 						req.URL.RawQuery = url.Values{
-							"attempt": []string{attemptsString},
+							"attempt": []string{attempt},
 						}.Encode()
 					})
 
-					It("calls db.Containers with the queried attempts", func() {
+					It("queries with it in the metadata", func() {
 						_, err := client.Do(req)
 						Expect(err).NotTo(HaveOccurred())
 
-						expectedArgs := db.Container{
-							ContainerMetadata: db.ContainerMetadata{
-								Attempts: attempts,
-							},
-						}
-						Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(1))
-						Expect(teamDB.FindContainersByDescriptorsArgsForCall(0)).To(Equal(expectedArgs))
+						meta := dbTeam.FindContainersByMetadataArgsForCall(0)
+						Expect(meta).To(Equal(db.ContainerMetadata{
+							Attempt: attempt,
+						}))
 					})
+				})
+			})
 
-					Context("when the attempts fails to be parsed as a slice of int", func() {
-						BeforeEach(func() {
-							req.URL.RawQuery = url.Values{
-								"attempt": []string{"not-a-slice"},
-							}.Encode()
-						})
+			Describe("querying with type 'check'", func() {
+				BeforeEach(func() {
+					req.URL.RawQuery = url.Values{
+						"type":          []string{"check"},
+						"resource_name": []string{"some-resource"},
+						"pipeline_name": []string{"some-pipeline"},
+					}.Encode()
+				})
 
-						It("returns 400 Bad Request", func() {
-							response, _ := client.Do(req)
-							Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-						})
+				It("queries with check properties", func() {
+					_, err := client.Do(req)
+					Expect(err).NotTo(HaveOccurred())
 
-						It("does not lookup containers", func() {
-							client.Do(req)
-
-							Expect(teamDB.FindContainersByDescriptorsCallCount()).To(Equal(0))
-						})
-					})
+					_, pipelineName, resourceName, variablesFactory := dbTeam.FindCheckContainersArgsForCall(0)
+					Expect(pipelineName).To(Equal("some-pipeline"))
+					Expect(resourceName).To(Equal("some-resource"))
+					Expect(variablesFactory).To(Equal(fakeVariablesFactory))
 				})
 			})
 		})
 	})
 
 	Describe("GET /api/v1/containers/:id", func() {
+		var handle = "some-handle"
+
 		BeforeEach(func() {
-			teamDB.GetContainerReturns(fakeContainer1, true, nil)
+			dbTeam.FindContainerByHandleReturns(fakeContainer1, true, nil)
 
 			var err error
 			req, err = http.NewRequest("GET", server.URL+"/api/v1/containers/"+handle, nil)
@@ -452,7 +378,7 @@ var _ = Describe("Containers API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401 Unauthorized", func() {
@@ -465,13 +391,13 @@ var _ = Describe("Containers API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("some-team", true, true)
 			})
 
 			Context("when the container is not found", func() {
 				BeforeEach(func() {
-					teamDB.GetContainerReturns(db.SavedContainer{}, false, nil)
+					dbTeam.FindContainerByHandleReturns(nil, false, nil)
 				})
 
 				It("returns 404 Not Found", func() {
@@ -484,7 +410,7 @@ var _ = Describe("Containers API", func() {
 
 			Context("when the container is found", func() {
 				BeforeEach(func() {
-					teamDB.GetContainerReturns(fakeContainer1, true, nil)
+					dbTeam.FindContainerByHandleReturns(fakeContainer1, true, nil)
 				})
 
 				It("returns 200 OK", func() {
@@ -505,8 +431,8 @@ var _ = Describe("Containers API", func() {
 					_, err := client.Do(req)
 					Expect(err).NotTo(HaveOccurred())
 
-					Expect(teamDB.GetContainerCallCount()).To(Equal(1))
-					Expect(teamDB.GetContainerArgsForCall(0)).To(Equal(handle))
+					Expect(dbTeam.FindContainerByHandleCallCount()).To(Equal(1))
+					Expect(dbTeam.FindContainerByHandleArgsForCall(0)).To(Equal(handle))
 				})
 
 				It("returns the container", func() {
@@ -518,19 +444,15 @@ var _ = Describe("Containers API", func() {
 
 					Expect(body).To(MatchJSON(`
 						{
-							"pipeline_name": "some-pipeline",
-							"step_type": "task",
-							"step_name": "some-step",
-							"job_name": "some-job",
-							"build_id": 1234,
-							"build_name": "2",
 							"id": "some-handle",
-							"ttl_in_seconds": 120,
-							"validity_in_seconds": 300,
-							"worker_name": "some-worker-guid",
+							"worker_name": "some-worker-name",
+							"type": "task",
+							"step_name": "some-step",
+							"attempt": "1.5",
+							"pipeline_id": 1111,
+							"job_id": 2222,
+							"build_id": 3333,
 							"working_directory": "/tmp/build/my-favorite-guid",
-							"env_variables": ["VAR1=VAL1"],
-							"attempt": [1,5],
 							"user": "snoopy"
 						}
 					`))
@@ -544,7 +466,7 @@ var _ = Describe("Containers API", func() {
 
 				BeforeEach(func() {
 					expectedErr = errors.New("some error")
-					teamDB.GetContainerReturns(db.SavedContainer{}, false, expectedErr)
+					dbTeam.FindContainerByHandleReturns(nil, false, expectedErr)
 				})
 
 				It("returns 500", func() {
@@ -559,6 +481,8 @@ var _ = Describe("Containers API", func() {
 
 	Describe("GET /api/v1/containers/:id/hijack", func() {
 		var (
+			handle = "some-handle"
+
 			requestPayload string
 
 			conn     *websocket.Conn
@@ -603,47 +527,46 @@ var _ = Describe("Containers API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("some-team", true, true)
 			})
 
 			Context("and the worker client returns a container", func() {
 				var (
-					fakeDBContainer db.SavedContainer
+					fakeDBContainer *dbfakes.FakeCreatedContainer
 					fakeContainer   *workerfakes.FakeContainer
 				)
 
 				BeforeEach(func() {
-					fakeDBContainer = db.SavedContainer{}
-					teamDB.GetContainerReturns(fakeDBContainer, true, nil)
+					fakeDBContainer = new(dbfakes.FakeCreatedContainer)
+					dbTeam.FindContainerByHandleReturns(fakeDBContainer, true, nil)
+					fakeDBContainer.HandleReturns("some-handle")
 
 					fakeContainer = new(workerfakes.FakeContainer)
-					fakeWorkerClient.LookupContainerReturns(fakeContainer, true, nil)
+					fakeWorkerClient.FindContainerByHandleReturns(fakeContainer, true, nil)
 				})
 
 				Context("when the call to lookup the container returns an error", func() {
 					BeforeEach(func() {
-						fakeWorkerClient.LookupContainerReturns(nil, false, errors.New("nope"))
+						expectBadHandshake = true
+
+						fakeWorkerClient.FindContainerByHandleReturns(nil, false, errors.New("nope"))
 					})
 
-					It("closes the websocket connection with an error", func() {
-						_, _, err := conn.ReadMessage()
-
-						Expect(websocket.IsCloseError(err, 1011)).To(BeTrue()) // internal server error
-						Expect(err).To(MatchError(ContainSubstring("failed to lookup container")))
+					It("returns 500 internal error", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
 
 				Context("when the container could not be found on the worker client", func() {
 					BeforeEach(func() {
-						fakeWorkerClient.LookupContainerReturns(nil, false, nil)
+						expectBadHandshake = true
+
+						fakeWorkerClient.FindContainerByHandleReturns(nil, false, nil)
 					})
 
-					It("closes the websocket connection with an error", func() {
-						_, _, err := conn.ReadMessage()
-
-						Expect(websocket.IsCloseError(err, 1011)).To(BeTrue()) // internal server error
-						Expect(err).To(MatchError(ContainSubstring("could not find container")))
+					It("returns 404 Not Found", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 					})
 				})
 
@@ -685,8 +608,9 @@ var _ = Describe("Containers API", func() {
 					It("hijacks the build", func() {
 						Eventually(fakeContainer.RunCallCount).Should(Equal(1))
 
-						_, lookedUpID := fakeWorkerClient.LookupContainerArgsForCall(0)
-						Expect(lookedUpID).To(Equal(handle))
+						_, lookedUpTeamID, lookedUpHandle := fakeWorkerClient.FindContainerByHandleArgsForCall(0)
+						Expect(lookedUpTeamID).To(Equal(734))
+						Expect(lookedUpHandle).To(Equal(handle))
 
 						spec, io := fakeContainer.RunArgsForCall(0)
 						Expect(spec).To(Equal(garden.ProcessSpec{
@@ -697,6 +621,12 @@ var _ = Describe("Containers API", func() {
 						Expect(io.Stdin).NotTo(BeNil())
 						Expect(io.Stdout).NotTo(BeNil())
 						Expect(io.Stderr).NotTo(BeNil())
+					})
+
+					It("marks container as hijacked", func() {
+						Eventually(fakeContainer.RunCallCount).Should(Equal(1))
+
+						Expect(fakeContainer.MarkAsHijackedCallCount()).To(Equal(1))
 					})
 
 					Context("when stdin is sent over the API", func() {
@@ -788,11 +718,6 @@ var _ = Describe("Containers API", func() {
 							Expect(hijackOutput).To(Equal(atc.HijackOutput{
 								ExitStatus: &exitStatus,
 							}))
-
-						})
-
-						It("releases the container", func() {
-							Eventually(fakeContainer.ReleaseCallCount).Should(Equal(1))
 						})
 					})
 
@@ -854,39 +779,13 @@ var _ = Describe("Containers API", func() {
 					})
 				})
 			})
-
-			Context("when the container cannot be found", func() {
-				BeforeEach(func() {
-					expectBadHandshake = true
-
-					teamDB.GetContainerReturns(db.SavedContainer{}, false, nil)
-				})
-
-				It("returns 404 Not Found", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					Expect(fakeWorkerClient.LookupContainerCallCount()).To(Equal(0))
-				})
-			})
-
-			Context("when the db request fails", func() {
-				BeforeEach(func() {
-					expectBadHandshake = true
-
-					fakeErr := errors.New("error")
-					teamDB.GetContainerReturns(db.SavedContainer{}, false, fakeErr)
-				})
-
-				It("returns 500 internal error", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-				})
-			})
 		})
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
 				expectBadHandshake = true
 
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401 Unauthorized", func() {

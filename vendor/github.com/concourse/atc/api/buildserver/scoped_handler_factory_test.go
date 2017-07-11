@@ -88,6 +88,6 @@ type wrapHandler struct {
 }
 
 func (h *wrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := context.WithValue(r.Context(), auth.BuildKey, h.contextBuild)
+	ctx := context.WithValue(r.Context(), auth.BuildContextKey, h.contextBuild)
 	h.delegate.ServeHTTP(w, r.WithContext(ctx))
 }
