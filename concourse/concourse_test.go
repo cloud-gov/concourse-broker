@@ -58,7 +58,7 @@ var _ = Describe("Concourse", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			desiredTeam = atc.Team{
-				ID:   1,
+				ID:   2,
 				Name: "team venture",
 				Auth: map[string]*json.RawMessage{
 					uaa.ProviderName: (*json.RawMessage)(&currentAuthData),
@@ -67,13 +67,17 @@ var _ = Describe("Concourse", func() {
 			expectedTeams = []atc.Team{
 				{
 					ID:   1,
+					Name: "main",
+				},
+				{
+					ID:   2,
 					Name: "team venture",
 					Auth: map[string]*json.RawMessage{
 						uaa.ProviderName: (*json.RawMessage)(&outdatedAuthData),
 					},
 				},
 				{
-					ID:   2,
+					ID:   3,
 					Name: "team rocket",
 					Auth: map[string]*json.RawMessage{
 						uaa.ProviderName: (*json.RawMessage)(&currentAuthData),
@@ -81,7 +85,7 @@ var _ = Describe("Concourse", func() {
 				},
 			}
 			expectedTeam = atc.Team{
-				ID:   1,
+				ID:   2,
 				Name: "team venture",
 			}
 		})

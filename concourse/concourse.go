@@ -143,8 +143,19 @@ func (c *concourseClient) UpdateTeams() error {
 	errc := make(chan error)
 	for _, team := range teams {
 		go func(team atc.Team) {
+			if team.Name == adminTeam {
+				errc <- nil
+				return
+			}
+
+			authMessage, ok := team.Auth[uaa.ProviderName]
+			if !ok {
+				errc <- fmt.Errorf("UAA authentication not configured for team %s", team.Name)
+				return
+			}
+
 			auth := &uaa.UAAAuthConfig{}
-			if err := json.Unmarshal(*team.Auth[uaa.ProviderName], &auth); err != nil {
+			if err := json.Unmarshal(*authMessage, &auth); err != nil {
 				errc <- err
 				return
 			}
