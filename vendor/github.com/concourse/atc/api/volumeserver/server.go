@@ -6,26 +6,16 @@ import (
 )
 
 type Server struct {
-	logger lager.Logger
-
-	db            VolumesDB
-	teamDBFactory db.TeamDBFactory
-}
-
-//go:generate counterfeiter . VolumesDB
-
-type VolumesDB interface {
-	GetVolumes() ([]db.SavedVolume, error)
+	logger  lager.Logger
+	factory db.VolumeFactory
 }
 
 func NewServer(
 	logger lager.Logger,
-	db VolumesDB,
-	teamDBFactory db.TeamDBFactory,
+	vf db.VolumeFactory,
 ) *Server {
 	return &Server{
-		logger:        logger,
-		db:            db,
-		teamDBFactory: teamDBFactory,
+		logger:  logger,
+		factory: vf,
 	}
 }

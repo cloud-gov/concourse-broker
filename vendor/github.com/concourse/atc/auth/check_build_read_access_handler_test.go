@@ -20,7 +20,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		response       *http.Response
 		server         *httptest.Server
 		delegate       *buildDelegateHandler
-		buildsDB       *authfakes.FakeBuildsDB
+		buildFactory   *dbfakes.FakeBuildFactory
 		handlerFactory auth.CheckBuildReadAccessHandlerFactory
 		handler        http.Handler
 
@@ -28,12 +28,12 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		userContextReader *authfakes.FakeUserContextReader
 
 		build    *dbfakes.FakeBuild
-		pipeline db.SavedPipeline
+		pipeline *dbfakes.FakePipeline
 	)
 
 	BeforeEach(func() {
-		buildsDB = new(authfakes.FakeBuildsDB)
-		handlerFactory = auth.NewCheckBuildReadAccessHandlerFactory(buildsDB)
+		buildFactory = new(dbfakes.FakeBuildFactory)
+		handlerFactory = auth.NewCheckBuildReadAccessHandlerFactory(buildFactory)
 
 		authValidator = new(authfakes.FakeValidator)
 		userContextReader = new(authfakes.FakeUserContextReader)
@@ -41,8 +41,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		delegate = &buildDelegateHandler{}
 
 		build = new(dbfakes.FakeBuild)
-		pipeline = db.SavedPipeline{}
-		build.GetPipelineReturns(pipeline, nil)
+		pipeline = new(dbfakes.FakePipeline)
+		build.PipelineReturns(pipeline, true, nil)
 		build.TeamNameReturns("some-team")
 		build.JobNameReturns("some-job")
 	})
@@ -75,7 +75,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	WithExistingBuild := func(buildExistsFunc func()) {
 		Context("when build exists", func() {
 			BeforeEach(func() {
-				buildsDB.GetBuildByIDReturns(build, true, nil)
+				buildFactory.BuildReturns(build, true, nil)
 			})
 
 			buildExistsFunc()
@@ -83,7 +83,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when build is not found", func() {
 			BeforeEach(func() {
-				buildsDB.GetBuildByIDReturns(nil, false, nil)
+				buildFactory.BuildReturns(nil, false, nil)
 			})
 
 			It("returns 404", func() {
@@ -93,7 +93,7 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 		Context("when getting build fails", func() {
 			BeforeEach(func() {
-				buildsDB.GetBuildByIDReturns(nil, false, errors.New("disaster"))
+				buildFactory.BuildReturns(nil, false, errors.New("disaster"))
 			})
 
 			It("returns 404", func() {
@@ -126,7 +126,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 			WithExistingBuild(func() {
 				Context("when pipeline is public", func() {
 					BeforeEach(func() {
-						build.GetPipelineReturns(db.SavedPipeline{Public: true}, nil)
+						pipeline.PublicReturns(true)
+						build.PipelineReturns(pipeline, true, nil)
 					})
 
 					ItReturnsTheBuild()
@@ -134,7 +135,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 				Context("when pipeline is private", func() {
 					BeforeEach(func() {
-						build.GetPipelineReturns(db.SavedPipeline{Public: false}, nil)
+						pipeline.PublicReturns(false)
+						build.PipelineReturns(pipeline, true, nil)
 					})
 
 					It("returns 403", func() {
@@ -153,7 +155,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 			WithExistingBuild(func() {
 				Context("when pipeline is public", func() {
 					BeforeEach(func() {
-						build.GetPipelineReturns(db.SavedPipeline{Public: true}, nil)
+						pipeline.PublicReturns(true)
+						build.PipelineReturns(pipeline, true, nil)
 					})
 
 					ItReturnsTheBuild()
@@ -161,7 +164,8 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 
 				Context("when pipeline is private", func() {
 					BeforeEach(func() {
-						build.GetPipelineReturns(db.SavedPipeline{Public: false}, nil)
+						pipeline.PublicReturns(false)
+						build.PipelineReturns(pipeline, true, nil)
 					})
 
 					It("returns 401", func() {
@@ -173,7 +177,10 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 	})
 
 	Context("CheckIfPrivateJobHandler", func() {
+		var fakeJob *dbfakes.FakeJob
+
 		BeforeEach(func() {
+			fakeJob = new(dbfakes.FakeJob)
 			checkBuildReadAccessHandler := handlerFactory.CheckIfPrivateJobHandler(delegate, auth.UnauthorizedRejector{})
 			handler = auth.WrapHandler(checkBuildReadAccessHandler, authValidator, userContextReader)
 		})
@@ -181,12 +188,43 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 		ItChecksIfJobIsPrivate := func(status int) {
 			Context("when pipeline is public", func() {
 				BeforeEach(func() {
-					build.GetPipelineReturns(db.SavedPipeline{Public: true}, nil)
+					pipeline.PublicReturns(true)
+					build.PipelineReturns(pipeline, true, nil)
 				})
 
-				Context("when getting build config fails", func() {
+				Context("and job is public", func() {
 					BeforeEach(func() {
-						build.GetConfigReturns(atc.Config{}, 0, errors.New("disaster"))
+						fakeJob.NameReturns("some-job")
+						fakeJob.ConfigReturns(atc.JobConfig{
+							Name:   "some-job",
+							Public: true,
+						})
+
+						pipeline.JobReturns(fakeJob, true, nil)
+					})
+
+					ItReturnsTheBuild()
+				})
+
+				Context("and job is private", func() {
+					BeforeEach(func() {
+						fakeJob.NameReturns("some-job")
+						fakeJob.ConfigReturns(atc.JobConfig{
+							Name:   "some-job",
+							Public: false,
+						})
+
+						pipeline.JobReturns(fakeJob, true, nil)
+					})
+
+					It("returns "+string(status), func() {
+						Expect(response.StatusCode).To(Equal(status))
+					})
+				})
+
+				Context("getting the job fails", func() {
+					BeforeEach(func() {
+						pipeline.JobReturns(nil, false, errors.New("error"))
 					})
 
 					It("returns 500", func() {
@@ -194,58 +232,21 @@ var _ = Describe("CheckBuildReadAccessHandler", func() {
 					})
 				})
 
-				Context("getting build config succeeds", func() {
-					var config atc.Config
-
-					Context("and job is public", func() {
-						BeforeEach(func() {
-							config = atc.Config{
-								Jobs: []atc.JobConfig{
-									{
-										Name:   "some-job",
-										Public: true,
-									},
-								},
-							}
-							build.GetConfigReturns(config, 1, nil)
-						})
-
-						ItReturnsTheBuild()
+				Context("when the job is not found", func() {
+					BeforeEach(func() {
+						pipeline.JobReturns(nil, false, nil)
 					})
 
-					Context("and job is private", func() {
-						BeforeEach(func() {
-							config = atc.Config{
-								Jobs: []atc.JobConfig{
-									{
-										Name:   "some-job",
-										Public: false,
-									},
-								},
-							}
-							build.GetConfigReturns(config, 1, nil)
-						})
-
-						It("returns "+string(status), func() {
-							Expect(response.StatusCode).To(Equal(status))
-						})
-					})
-
-					Context("checking job is public fails", func() {
-						BeforeEach(func() {
-							build.GetConfigReturns(atc.Config{}, 0, errors.New("disaster"))
-						})
-
-						It("returns 500", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-						})
+					It("returns not found", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 					})
 				})
 			})
 
 			Context("when pipeline is private", func() {
 				BeforeEach(func() {
-					build.GetPipelineReturns(db.SavedPipeline{Public: false}, nil)
+					pipeline.PublicReturns(false)
+					build.PipelineReturns(pipeline, true, nil)
 				})
 
 				It("returns "+string(status), func() {
@@ -294,5 +295,5 @@ type buildDelegateHandler struct {
 
 func (handler *buildDelegateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler.IsCalled = true
-	handler.ContextBuild = r.Context().Value(auth.BuildKey).(db.Build)
+	handler.ContextBuild = r.Context().Value(auth.BuildContextKey).(db.Build)
 }

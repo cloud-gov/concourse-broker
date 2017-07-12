@@ -10,13 +10,13 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) GetResource(pipelineDB db.PipelineDB) http.Handler {
+func (s *Server) GetResource(pipeline db.Pipeline) http.Handler {
 	logger := s.logger.Session("get-resource")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resourceName := r.FormValue(":resource_name")
 		teamName := r.FormValue(":team_name")
 
-		dbResource, found, err := pipelineDB.GetResource(resourceName)
+		dbResource, found, err := pipeline.Resource(resourceName)
 		if err != nil {
 			logger.Error("failed-to-get-resource", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -31,7 +31,7 @@ func (s *Server) GetResource(pipelineDB db.PipelineDB) http.Handler {
 
 		resource := present.Resource(
 			dbResource,
-			pipelineDB.Config().Groups,
+			pipeline.Groups(),
 			auth.IsAuthenticated(r),
 			teamName,
 		)

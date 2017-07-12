@@ -28,6 +28,7 @@ type FakeServiceBroker struct {
 
 	ProvisionError     error
 	BindError          error
+	UnbindError        error
 	DeprovisionError   error
 	LastOperationError error
 	UpdateError        error
@@ -65,14 +66,14 @@ func (fakeBroker *FakeServiceBroker) Services(context context.Context) []brokera
 	}
 
 	return []brokerapi.Service{
-		brokerapi.Service{
+		{
 			ID:            "0A789746-596F-4CEA-BFAC-A0795DA056E3",
 			Name:          "p-cassandra",
 			Description:   "Cassandra service for application development and testing",
 			Bindable:      true,
 			PlanUpdatable: true,
 			Plans: []brokerapi.ServicePlan{
-				brokerapi.ServicePlan{
+				{
 					ID:          "ABE176EE-F69F-4A96-80CE-142595CC24E3",
 					Name:        "default",
 					Description: "The default Cassandra plan",
@@ -273,6 +274,10 @@ func (fakeBroker *FakeServiceBroker) Unbind(context context.Context, instanceID,
 
 	if val, ok := context.Value("test_context").(bool); ok {
 		fakeBroker.ReceivedContext = val
+	}
+
+	if fakeBroker.UnbindError != nil {
+		return fakeBroker.UnbindError
 	}
 
 	fakeBroker.UnbindingDetails = details

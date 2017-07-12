@@ -16,7 +16,7 @@ type TaskConfig struct {
 
 	// Optional string specifying an image to use for the build. Depending on the
 	// platform, this may or may not be required (e.g. Windows/OS X vs. Linux).
-	Image string `json:"image,omitempty" yaml:"image,omitempty" mapstructure:"image"`
+	RootfsURI string `json:"rootfs_uri,omitempty" yaml:"rootfs_uri,omitempty" mapstructure:"rootfs_uri"`
 
 	ImageResource *ImageResource `json:"image_resource,omitempty" yaml:"image_resource,omitempty" mapstructure:"image_resource"`
 
@@ -31,6 +31,9 @@ type TaskConfig struct {
 
 	// The set of (logical, name-only) outputs provided by the task.
 	Outputs []TaskOutputConfig `json:"outputs,omitempty" yaml:"outputs,omitempty" mapstructure:"outputs"`
+
+	// Path to cached directory that will be shared between builds for the same task.
+	Caches []CacheConfig `json:"caches,omitempty" yaml:"caches,omitempty" mapstructure:"caches"`
 }
 
 type ImageResource struct {
@@ -38,7 +41,7 @@ type ImageResource struct {
 	Source Source `yaml:"source" json:"source" mapstructure:"source"`
 }
 
-func LoadTaskConfig(configBytes []byte) (TaskConfig, error) {
+func NewTaskConfig(configBytes []byte) (TaskConfig, error) {
 	var untypedInput map[string]interface{}
 
 	if err := yaml.Unmarshal(configBytes, &untypedInput); err != nil {
@@ -82,8 +85,8 @@ func (config TaskConfig) Merge(other TaskConfig) TaskConfig {
 		config.Platform = other.Platform
 	}
 
-	if other.Image != "" {
-		config.Image = other.Image
+	if other.RootfsURI != "" {
+		config.RootfsURI = other.RootfsURI
 	}
 
 	if len(config.Params) > 0 {
@@ -330,7 +333,7 @@ func (config TaskConfig) validateInputContainsNames() []string {
 type TaskRunConfig struct {
 	Path string   `json:"path" yaml:"path"`
 	Args []string `json:"args,omitempty" yaml:"args"`
-	Dir  string   `json:"dir",omitempty" yaml:"dir"`
+	Dir  string   `json:"dir,omitempty" yaml:"dir"`
 
 	// The user that the task will run as (defaults to whatever the docker image specifies)
 	User string `json:"user,omitempty" yaml:"user,omitempty" mapstructure:"user"`
@@ -363,4 +366,8 @@ func (output TaskOutputConfig) resolvePath() string {
 type MetadataField struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+}
+
+type CacheConfig struct {
+	Path string `json:"path,omitempty" yaml:"path,omitempty" mapstructure:"path"`
 }

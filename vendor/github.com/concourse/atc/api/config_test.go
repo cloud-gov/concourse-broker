@@ -10,8 +10,8 @@ import (
 	"net/textproto"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/dbng"
-	"github.com/concourse/atc/dbng/dbngfakes"
+	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/tedsuo/rata"
 	"gopkg.in/yaml.v2"
@@ -95,7 +95,7 @@ var _ = Describe("Config API", func() {
 							Task:       "some-task",
 							Privileged: true,
 							TaskConfig: &atc.TaskConfig{
-								Image: "some-image",
+								RootfsURI: "some-image",
 							},
 						},
 						{
@@ -137,78 +137,219 @@ var _ = Describe("Config API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
 			})
 
-			Context("when the config can be loaded", func() {
+			Context("when the team is found", func() {
+				var fakeTeam *dbfakes.FakeTeam
 				BeforeEach(func() {
-					teamDB.GetConfigReturns(pipelineConfig, atc.RawConfig("raw-config"), 1, nil)
+					fakeTeam = new(dbfakes.FakeTeam)
+					fakeTeam.NameReturns("a-team")
+					dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 				})
 
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
+				Context("when the pipeline is found", func() {
+					var fakePipeline *dbfakes.FakePipeline
+					BeforeEach(func() {
+						fakePipeline = new(dbfakes.FakePipeline)
+						fakePipeline.NameReturns("something-else")
+						fakePipeline.ConfigVersionReturns(1)
+						fakePipeline.GroupsReturns(atc.GroupConfigs{
+							{
+								Name:      "some-group",
+								Jobs:      []string{"some-job"},
+								Resources: []string{"some-resource"},
+							},
+						})
+						fakeTeam.PipelineReturns(fakePipeline, true, nil)
+					})
+
+					Context("when the jobs are found", func() {
+						var fakeJob *dbfakes.FakeJob
+						BeforeEach(func() {
+							fakeJob = new(dbfakes.FakeJob)
+							fakeJob.ConfigReturns(atc.JobConfig{
+								Name:   "some-job",
+								Public: true,
+								Serial: true,
+								Plan: atc.PlanSequence{
+									{
+										Get:      "some-input",
+										Resource: "some-resource",
+										Params: atc.Params{
+											"some-param": "some-value",
+											"nested": map[string]interface{}{
+												"key": "value",
+												"array": []interface{}{
+													map[string]interface{}{
+														"key": "value",
+													},
+												},
+											},
+										},
+									},
+									{
+										Task:       "some-task",
+										Privileged: true,
+										TaskConfig: &atc.TaskConfig{
+											RootfsURI: "some-image",
+										},
+									},
+									{
+										Put:      "some-output",
+										Resource: "some-resource",
+										Params: atc.Params{
+											"some-param": "some-value",
+											"nested": map[string]interface{}{
+												"key": "value",
+												"array": []interface{}{
+													map[string]interface{}{
+														"key": "value",
+													},
+												},
+											},
+										},
+									},
+								},
+							})
+
+							fakePipeline.JobsReturns(db.Jobs{fakeJob}, nil)
+						})
+
+						Context("when the resources are found", func() {
+							var fakeResource *dbfakes.FakeResource
+							BeforeEach(func() {
+								fakeResource = new(dbfakes.FakeResource)
+								fakeResource.NameReturns("some-resource")
+								fakeResource.TypeReturns("some-type")
+								fakeResource.SourceReturns(atc.Source{
+									"source-config": "some-value",
+									"nested": map[string]interface{}{
+										"key": "value",
+										"array": []interface{}{
+											map[string]interface{}{
+												"key": "value",
+											},
+										},
+									},
+								})
+
+								fakePipeline.ResourcesReturns(db.Resources{fakeResource}, nil)
+							})
+
+							Context("when the resource types are found", func() {
+								var fakeResourceType *dbfakes.FakeResourceType
+								BeforeEach(func() {
+									fakeResourceType = new(dbfakes.FakeResourceType)
+									fakeResourceType.NameReturns("custom-resource")
+									fakeResourceType.TypeReturns("custom-type")
+									fakeResourceType.SourceReturns(atc.Source{"custom": "source"})
+
+									fakePipeline.ResourceTypesReturns(db.ResourceTypes{fakeResourceType}, nil)
+								})
+
+								It("returns 200", func() {
+									Expect(response.StatusCode).To(Equal(http.StatusOK))
+								})
+
+								It("returns the config version as X-Concourse-Config-Version", func() {
+									Expect(response.Header.Get(atc.ConfigVersionHeader)).To(Equal("1"))
+								})
+
+								It("returns the config", func() {
+									var actualConfigResponse atc.ConfigResponse
+									err := json.NewDecoder(response.Body).Decode(&actualConfigResponse)
+									Expect(err).NotTo(HaveOccurred())
+
+									rawConfig, err := json.Marshal(pipelineConfig)
+									Expect(err).NotTo(HaveOccurred())
+
+									Expect(actualConfigResponse).To(Equal(atc.ConfigResponse{
+										Config:    &pipelineConfig,
+										RawConfig: atc.RawConfig(rawConfig),
+									}))
+								})
+							})
+
+							Context("when finding the resource types fails", func() {
+								BeforeEach(func() {
+									fakePipeline.ResourceTypesReturns(nil, errors.New("failed"))
+								})
+
+								It("returns 500", func() {
+									Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+								})
+							})
+						})
+
+						Context("when finding the resources fails", func() {
+							BeforeEach(func() {
+								fakePipeline.ResourcesReturns(nil, errors.New("failed"))
+							})
+
+							It("returns 500", func() {
+								Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+							})
+						})
+					})
+
+					Context("when finding the jobs fails", func() {
+						BeforeEach(func() {
+							fakePipeline.JobsReturns(nil, errors.New("failed"))
+						})
+
+						It("returns 500", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
+					})
 				})
 
-				It("returns the config version as X-Concourse-Config-Version", func() {
-					Expect(response.Header.Get(atc.ConfigVersionHeader)).To(Equal("1"))
+				Context("when the pipeline is not found", func() {
+					BeforeEach(func() {
+						fakeTeam.PipelineReturns(nil, false, nil)
+					})
+
+					It("returns 404", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+					})
 				})
 
-				It("returns the config", func() {
-					var actualConfigResponse atc.ConfigResponse
-					err := json.NewDecoder(response.Body).Decode(&actualConfigResponse)
-					Expect(err).NotTo(HaveOccurred())
+				Context("when finding the pipeline fails", func() {
+					BeforeEach(func() {
+						fakeTeam.PipelineReturns(nil, false, errors.New("failed"))
+					})
 
-					Expect(actualConfigResponse).To(Equal(atc.ConfigResponse{
-						Config:    &pipelineConfig,
-						RawConfig: atc.RawConfig("raw-config"),
-					}))
-				})
-
-				It("calls get config with the correct arguments", func() {
-					Expect(teamDB.GetConfigArgsForCall(0)).To(Equal("something-else"))
+					It("returns 500", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
 				})
 			})
 
-			Context("when getting the config fails", func() {
+			Context("when the team is not found", func() {
 				BeforeEach(func() {
-					teamDB.GetConfigReturns(atc.Config{}, atc.RawConfig(""), 0, errors.New("oh no!"))
+					dbTeamFactory.FindTeamReturns(nil, false, nil)
+				})
+
+				It("returns 404", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+				})
+			})
+
+			Context("when finding the team fails", func() {
+				BeforeEach(func() {
+					dbTeamFactory.FindTeamReturns(nil, false, errors.New("failed"))
 				})
 
 				It("returns 500", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 				})
 			})
-
-			Context("when getting the config fails because it is malformed", func() {
-				BeforeEach(func() {
-					teamDB.GetConfigReturns(atc.Config{}, atc.RawConfig("raw-config"), 42, atc.MalformedConfigError{errors.New("invalid character")})
-				})
-
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				It("returns error JSON", func() {
-					Expect(ioutil.ReadAll(response.Body)).To(MatchJSON(`
-					{
-						"config": null,
-						"errors": [
-						  "malformed config: invalid character"
-						],
-						"raw_config": "raw-config"
-					}`))
-				})
-
-				It("returns the config version header", func() {
-					Expect(response.Header.Get(atc.ConfigVersionHeader)).To(Equal("42"))
-				})
-			})
 		})
 
 		Context("when not authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401", func() {
@@ -240,7 +381,7 @@ var _ = Describe("Config API", func() {
 
 		Context("when authorized", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 				userContextReader.GetTeamReturns("a-team", true, true)
 			})
 
@@ -320,8 +461,8 @@ var _ = Describe("Config API", func() {
 							name, savedConfig, id, pipelineState := dbTeam.SavePipelineArgsForCall(0)
 							Expect(name).To(Equal("a-pipeline"))
 							Expect(savedConfig).To(Equal(pipelineConfig))
-							Expect(id).To(Equal(dbng.ConfigVersion(42)))
-							Expect(pipelineState).To(Equal(dbng.PipelineNoChange))
+							Expect(id).To(Equal(db.ConfigVersion(42)))
+							Expect(pipelineState).To(Equal(db.PipelineNoChange))
 						})
 
 						Context("and saving it fails", func() {
@@ -340,7 +481,7 @@ var _ = Describe("Config API", func() {
 
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
-								returnedPipeline := new(dbngfakes.FakePipeline)
+								returnedPipeline := new(dbfakes.FakePipeline)
 								dbTeam.SavePipelineReturns(returnedPipeline, true, nil)
 							})
 
@@ -396,8 +537,8 @@ var _ = Describe("Config API", func() {
 							name, savedConfig, id, pipelineState := dbTeam.SavePipelineArgsForCall(0)
 							Expect(name).To(Equal("a-pipeline"))
 							Expect(savedConfig).To(Equal(pipelineConfig))
-							Expect(id).To(Equal(dbng.ConfigVersion(42)))
-							Expect(pipelineState).To(Equal(dbng.PipelineNoChange))
+							Expect(id).To(Equal(db.ConfigVersion(42)))
+							Expect(pipelineState).To(Equal(db.PipelineNoChange))
 						})
 
 						It("does not give the DB a map of empty interfaces to empty interfaces", func() {
@@ -478,14 +619,14 @@ jobs:
 									},
 								}))
 
-								Expect(id).To(Equal(dbng.ConfigVersion(42)))
-								Expect(pipelineState).To(Equal(dbng.PipelineNoChange))
+								Expect(id).To(Equal(db.ConfigVersion(42)))
+								Expect(pipelineState).To(Equal(db.PipelineNoChange))
 							})
 						})
 
 						Context("when it's the first time the pipeline has been created", func() {
 							BeforeEach(func() {
-								returnedPipeline := new(dbngfakes.FakePipeline)
+								returnedPipeline := new(dbfakes.FakePipeline)
 								dbTeam.SavePipelineReturns(returnedPipeline, true, nil)
 							})
 
@@ -537,7 +678,7 @@ jobs:
 
 					Context("multi-part requests", func() {
 						var pausedValue string
-						var expectedDBValue dbng.PipelinePausedState
+						var expectedDBValue db.PipelinePausedState
 
 						writeMultiPart := func() {
 							body := &bytes.Buffer{}
@@ -581,13 +722,13 @@ jobs:
 								name, savedConfig, id, pipelineState := dbTeam.SavePipelineArgsForCall(0)
 								Expect(name).To(Equal("a-pipeline"))
 								Expect(savedConfig).To(Equal(pipelineConfig))
-								Expect(id).To(Equal(dbng.ConfigVersion(42)))
+								Expect(id).To(Equal(db.ConfigVersion(42)))
 								Expect(pipelineState).To(Equal(expectedDBValue))
 							})
 
 							Context("when it's the first time the pipeline has been created", func() {
 								BeforeEach(func() {
-									returnedPipeline := new(dbngfakes.FakePipeline)
+									returnedPipeline := new(dbfakes.FakePipeline)
 									dbTeam.SavePipelineReturns(returnedPipeline, true, nil)
 								})
 
@@ -654,7 +795,7 @@ jobs:
 						Context("when paused is specified", func() {
 							BeforeEach(func() {
 								pausedValue = "true"
-								expectedDBValue = dbng.PipelinePaused
+								expectedDBValue = db.PipelinePaused
 							})
 
 							itSavesThePipeline()
@@ -663,7 +804,7 @@ jobs:
 						Context("when unpaused is specified", func() {
 							BeforeEach(func() {
 								pausedValue = "false"
-								expectedDBValue = dbng.PipelineUnpaused
+								expectedDBValue = db.PipelineUnpaused
 							})
 
 							itSavesThePipeline()
@@ -672,7 +813,7 @@ jobs:
 						Context("when neither paused or unpaused is specified", func() {
 							BeforeEach(func() {
 								pausedValue = ""
-								expectedDBValue = dbng.PipelineNoChange
+								expectedDBValue = db.PipelineNoChange
 							})
 
 							itSavesThePipeline()
@@ -821,13 +962,66 @@ jobs:
 					})
 				})
 
-				Context("when the config contains extra keys", func() {
+				Context("when the config contains extra keys at the toplevel", func() {
 					BeforeEach(func() {
 						request.Header.Set("Content-Type", "application/json")
 
-						remoraPayload, err := json.Marshal(RemoraConfig{
-							Config: pipelineConfig,
-							Extra:  "noooooo",
+						remoraPayload, err := json.Marshal(map[string]interface{}{
+							"extra": "noooooo",
+
+							"meta": map[string]interface{}{
+								"whoa": "lol",
+							},
+
+							"jobs": []map[string]interface{}{
+								{
+									"name":   "some-job",
+									"public": true,
+									"plan":   atc.PlanSequence{},
+								},
+							},
+						})
+						Expect(err).NotTo(HaveOccurred())
+
+						request.Body = gbytes.BufferWithBytes(remoraPayload)
+					})
+
+					It("returns 200", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusOK))
+					})
+
+					It("saves it", func() {
+						Expect(dbTeam.SavePipelineCallCount()).To(Equal(1))
+
+						name, savedConfig, id, _ := dbTeam.SavePipelineArgsForCall(0)
+						Expect(name).To(Equal("a-pipeline"))
+						Expect(savedConfig).To(Equal(atc.Config{
+							Jobs: atc.JobConfigs{
+								{
+									Name:   "some-job",
+									Public: true,
+									Plan:   atc.PlanSequence{},
+								},
+							},
+						}))
+						Expect(id).To(Equal(db.ConfigVersion(42)))
+					})
+				})
+
+				Context("when the config contains extra keys nested under a valid key", func() {
+					BeforeEach(func() {
+						request.Header.Set("Content-Type", "application/json")
+
+						remoraPayload, err := json.Marshal(map[string]interface{}{
+							"extra": "noooooo",
+
+							"jobs": []map[string]interface{}{
+								{
+									"name":  "some-job",
+									"pubic": true,
+									"plan":  atc.PlanSequence{},
+								},
+							},
 						})
 						Expect(err).NotTo(HaveOccurred())
 
@@ -842,7 +1036,7 @@ jobs:
 						Expect(ioutil.ReadAll(response.Body)).To(MatchJSON(`
 							{
 								"errors": [
-									"unknown/extra keys:\n  - extra\n"
+									"unknown/extra keys:\n  - jobs[0].pubic\n"
 								]
 							}`))
 					})
@@ -850,29 +1044,6 @@ jobs:
 					It("does not save it", func() {
 						Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
 					})
-				})
-			})
-
-			Context("when a config version is not specified", func() {
-				BeforeEach(func() {
-					// don't
-				})
-
-				It("returns 400", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-				})
-
-				It("returns an error in the response body", func() {
-					Expect(ioutil.ReadAll(response.Body)).To(MatchJSON(`
-							{
-								"errors": [
-									"no config version specified"
-								]
-							}`))
-				})
-
-				It("does not save it", func() {
-					Expect(dbTeam.SavePipelineCallCount()).To(Equal(0))
 				})
 			})
 
@@ -902,7 +1073,7 @@ jobs:
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401", func() {

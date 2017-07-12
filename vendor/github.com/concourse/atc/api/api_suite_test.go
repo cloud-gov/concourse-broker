@@ -15,18 +15,13 @@ import (
 
 	"github.com/concourse/atc/api"
 	"github.com/concourse/atc/auth"
-	"github.com/concourse/atc/dbng/dbngfakes"
-
-	"github.com/concourse/atc/api/buildserver/buildserverfakes"
-	"github.com/concourse/atc/api/containerserver/containerserverfakes"
-	"github.com/concourse/atc/api/jobserver/jobserverfakes"
-	"github.com/concourse/atc/api/pipes/pipesfakes"
-	"github.com/concourse/atc/api/resourceserver/resourceserverfakes"
-	"github.com/concourse/atc/api/teamserver/teamserverfakes"
-	"github.com/concourse/atc/api/volumeserver/volumeserverfakes"
-	"github.com/concourse/atc/auth/authfakes"
+	"github.com/concourse/atc/creds/credsfakes"
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/db/dbfakes"
+
+	"github.com/concourse/atc/api/jobserver/jobserverfakes"
+	"github.com/concourse/atc/api/resourceserver/resourceserverfakes"
+	"github.com/concourse/atc/auth/authfakes"
 	"github.com/concourse/atc/engine/enginefakes"
 	"github.com/concourse/atc/worker/workerfakes"
 	"github.com/concourse/atc/wrappa"
@@ -38,33 +33,34 @@ var (
 	externalURL  = "https://example.com"
 	oAuthBaseURL = "https://oauth.example.com"
 
-	authValidator        *authfakes.FakeValidator
-	userContextReader    *authfakes.FakeUserContextReader
-	fakeTokenGenerator   *authfakes.FakeTokenGenerator
-	providerFactory      *authfakes.FakeProviderFactory
-	fakeEngine           *enginefakes.FakeEngine
-	fakeWorkerClient     *workerfakes.FakeClient
-	teamServerDB         *teamserverfakes.FakeTeamsDB
-	volumesDB            *volumeserverfakes.FakeVolumesDB
-	containerDB          *containerserverfakes.FakeContainerDB
-	pipeDB               *pipesfakes.FakePipeDB
-	pipelineDBFactory    *dbfakes.FakePipelineDBFactory
-	teamDBFactory        *dbfakes.FakeTeamDBFactory
-	dbTeamFactory        *dbngfakes.FakeTeamFactory
-	dbWorkerFactory      *dbngfakes.FakeWorkerFactory
-	teamDB               *dbfakes.FakeTeamDB
-	pipelinesDB          *dbfakes.FakePipelinesDB
-	buildsDB             *authfakes.FakeBuildsDB
-	buildServerDB        *buildserverfakes.FakeBuildsDB
-	build                *dbfakes.FakeBuild
-	dbTeam               *dbngfakes.FakeTeam
-	fakeSchedulerFactory *jobserverfakes.FakeSchedulerFactory
-	fakeScannerFactory   *resourceserverfakes.FakeScannerFactory
-	peerAddr             string
-	drain                chan struct{}
-	expire               time.Duration
-	cliDownloadsDir      string
-	logger               *lagertest.TestLogger
+	jwtValidator                  *authfakes.FakeValidator
+	getTokenValidator             *authfakes.FakeValidator
+	userContextReader             *authfakes.FakeUserContextReader
+	fakeAuthTokenGenerator        *authfakes.FakeAuthTokenGenerator
+	fakeCSRFTokenGenerator        *authfakes.FakeCSRFTokenGenerator
+	providerFactory               *authfakes.FakeProviderFactory
+	fakeEngine                    *enginefakes.FakeEngine
+	fakeWorkerClient              *workerfakes.FakeClient
+	fakeVolumeFactory             *dbfakes.FakeVolumeFactory
+	fakeContainerFactory          *dbfakes.FakeContainerFactory
+	dbTeamFactory                 *dbfakes.FakeTeamFactory
+	dbPipelineFactory             *dbfakes.FakePipelineFactory
+	fakePipeline                  *dbfakes.FakePipeline
+	dbWorkerFactory               *dbfakes.FakeWorkerFactory
+	dbWorkerLifecycle             *dbfakes.FakeWorkerLifecycle
+	build                         *dbfakes.FakeBuild
+	dbBuildFactory                *dbfakes.FakeBuildFactory
+	dbTeam                        *dbfakes.FakeTeam
+	fakeSchedulerFactory          *jobserverfakes.FakeSchedulerFactory
+	fakeScannerFactory            *resourceserverfakes.FakeScannerFactory
+	fakeVariablesFactory          *credsfakes.FakeVariablesFactory
+	configValidationErrorMessages []string
+	peerAddr                      string
+	drain                         chan struct{}
+	expire                        time.Duration
+	isTLSEnabled                  bool
+	cliDownloadsDir               string
+	logger                        *lagertest.TestLogger
 
 	constructedEventHandler *fakeEventHandlerFactory
 
@@ -93,27 +89,27 @@ func (f *fakeEventHandlerFactory) Construct(
 }
 
 var _ = BeforeEach(func() {
-	pipelineDBFactory = new(dbfakes.FakePipelineDBFactory)
-	teamDBFactory = new(dbfakes.FakeTeamDBFactory)
-	teamServerDB = new(teamserverfakes.FakeTeamsDB)
-	teamDB = new(dbfakes.FakeTeamDB)
-	teamDBFactory.GetTeamDBReturns(teamDB)
-	buildServerDB = new(buildserverfakes.FakeBuildsDB)
-	containerDB = new(containerserverfakes.FakeContainerDB)
-	volumesDB = new(volumeserverfakes.FakeVolumesDB)
-	pipeDB = new(pipesfakes.FakePipeDB)
-	pipelinesDB = new(dbfakes.FakePipelinesDB)
-	buildsDB = new(authfakes.FakeBuildsDB)
+	dbTeamFactory = new(dbfakes.FakeTeamFactory)
+	dbPipelineFactory = new(dbfakes.FakePipelineFactory)
+	dbBuildFactory = new(dbfakes.FakeBuildFactory)
 
-	dbTeamFactory = new(dbngfakes.FakeTeamFactory)
-	dbTeam = new(dbngfakes.FakeTeam)
+	dbTeam = new(dbfakes.FakeTeam)
+	dbTeam.IDReturns(734)
 	dbTeamFactory.FindTeamReturns(dbTeam, true, nil)
+	dbTeamFactory.GetByIDReturns(dbTeam)
 
-	dbWorkerFactory = new(dbngfakes.FakeWorkerFactory)
+	fakePipeline = new(dbfakes.FakePipeline)
+	dbTeam.PipelineReturns(fakePipeline, true, nil)
 
-	authValidator = new(authfakes.FakeValidator)
+	dbWorkerFactory = new(dbfakes.FakeWorkerFactory)
+	dbWorkerLifecycle = new(dbfakes.FakeWorkerLifecycle)
+
+	jwtValidator = new(authfakes.FakeValidator)
+	getTokenValidator = new(authfakes.FakeValidator)
+
 	userContextReader = new(authfakes.FakeUserContextReader)
-	fakeTokenGenerator = new(authfakes.FakeTokenGenerator)
+	fakeAuthTokenGenerator = new(authfakes.FakeAuthTokenGenerator)
+	fakeCSRFTokenGenerator = new(authfakes.FakeCSRFTokenGenerator)
 	providerFactory = new(authfakes.FakeProviderFactory)
 
 	peerAddr = "127.0.0.1:1234"
@@ -125,6 +121,11 @@ var _ = BeforeEach(func() {
 	fakeSchedulerFactory = new(jobserverfakes.FakeSchedulerFactory)
 	fakeScannerFactory = new(resourceserverfakes.FakeScannerFactory)
 
+	fakeVolumeFactory = new(dbfakes.FakeVolumeFactory)
+	fakeContainerFactory = new(dbfakes.FakeContainerFactory)
+
+	fakeVariablesFactory = new(credsfakes.FakeVariablesFactory)
+
 	var err error
 
 	cliDownloadsDir, err = ioutil.TempDir("", "cli-downloads")
@@ -132,20 +133,21 @@ var _ = BeforeEach(func() {
 
 	constructedEventHandler = &fakeEventHandlerFactory{}
 
-	logger = lagertest.NewTestLogger("callbacks")
+	logger = lagertest.NewTestLogger("api")
 
 	sink = lager.NewReconfigurableSink(lager.NewWriterSink(GinkgoWriter, lager.DEBUG), lager.DEBUG)
-	logger.RegisterSink(sink)
 
 	expire = 24 * time.Hour
 
+	isTLSEnabled = false
+
 	build = new(dbfakes.FakeBuild)
 
-	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(pipelineDBFactory, teamDBFactory)
+	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(dbTeamFactory)
 
-	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(buildsDB)
+	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
 
-	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(buildsDB)
+	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
 
 	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
 
@@ -155,8 +157,8 @@ var _ = BeforeEach(func() {
 		externalURL,
 
 		wrappa.NewAPIAuthWrappa(
-			authValidator,
-			authValidator,
+			jwtValidator,
+			getTokenValidator,
 			userContextReader,
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,
@@ -164,22 +166,17 @@ var _ = BeforeEach(func() {
 			checkWorkerTeamAccessHandlerFactory,
 		),
 
-		fakeTokenGenerator,
+		fakeAuthTokenGenerator,
+		fakeCSRFTokenGenerator,
 		providerFactory,
 		oAuthBaseURL,
 
-		pipelineDBFactory,
-		teamDBFactory,
-
 		dbTeamFactory,
+		dbPipelineFactory,
 		dbWorkerFactory,
-
-		teamServerDB,
-		buildServerDB,
-		containerDB,
-		volumesDB,
-		pipeDB,
-		pipelinesDB,
+		fakeVolumeFactory,
+		fakeContainerFactory,
+		dbBuildFactory,
 
 		peerAddr,
 		constructedEventHandler.Construct,
@@ -195,10 +192,19 @@ var _ = BeforeEach(func() {
 
 		expire,
 
+		isTLSEnabled,
+
 		cliDownloadsDir,
 		"1.2.3",
+		"4.5.6",
+		fakeVariablesFactory,
 	)
 	Expect(err).NotTo(HaveOccurred())
+
+	handler = wrappa.LoggerHandler{
+		Logger:  logger,
+		Handler: handler,
+	}
 
 	server = httptest.NewServer(handler)
 

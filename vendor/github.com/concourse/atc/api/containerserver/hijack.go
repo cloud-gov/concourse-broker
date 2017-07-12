@@ -10,6 +10,7 @@ import (
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/worker"
 	"github.com/gorilla/websocket"
 )
 
@@ -17,7 +18,7 @@ var upgrader = websocket.Upgrader{
 	HandshakeTimeout: 5 * time.Second,
 }
 
-func (s *Server) HijackContainer(teamDB db.TeamDB) http.Handler {
+func (s *Server) HijackContainer(team db.Team) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handle := r.FormValue(":id")
 
@@ -25,7 +26,7 @@ func (s *Server) HijackContainer(teamDB db.TeamDB) http.Handler {
 			"handle": handle,
 		})
 
-		_, found, err := teamDB.GetContainer(handle)
+		container, found, err := s.workerClient.FindContainerByHandle(hLog, team.ID(), handle)
 		if err != nil {
 			hLog.Error("failed-to-find-container", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -57,8 +58,8 @@ func (s *Server) HijackContainer(teamDB db.TeamDB) http.Handler {
 		}
 
 		hijackRequest := hijackRequest{
-			ContainerHandle: handle,
-			Process:         processSpec,
+			Container: container,
+			Process:   processSpec,
 		}
 
 		s.hijack(hLog, conn, hijackRequest)
@@ -66,8 +67,8 @@ func (s *Server) HijackContainer(teamDB db.TeamDB) http.Handler {
 }
 
 type hijackRequest struct {
-	ContainerHandle string
-	Process         atc.HijackProcessSpec
+	Container worker.Container
+	Process   atc.HijackProcessSpec
 }
 
 func closeWithErr(log lager.Logger, conn *websocket.Conn, code int, reason string) {
@@ -84,24 +85,9 @@ func closeWithErr(log lager.Logger, conn *websocket.Conn, code int, reason strin
 
 func (s *Server) hijack(hLog lager.Logger, conn *websocket.Conn, request hijackRequest) {
 	hLog = hLog.Session("hijack", lager.Data{
-		"handle":  request.ContainerHandle,
+		"handle":  request.Container.Handle(),
 		"process": request.Process,
 	})
-
-	container, found, err := s.workerClient.LookupContainer(hLog, request.ContainerHandle)
-	if err != nil {
-		hLog.Error("failed-to-lookup-container", err)
-		closeWithErr(hLog, conn, websocket.CloseInternalServerErr, "failed to lookup container")
-		return
-	}
-
-	if !found {
-		hLog.Info("could-not-find-container")
-		closeWithErr(hLog, conn, websocket.CloseInternalServerErr, fmt.Sprintf("could not find container"))
-		return
-	}
-
-	defer container.Release(nil)
 
 	stdinR, stdinW := io.Pipe()
 
@@ -134,7 +120,7 @@ func (s *Server) hijack(hLog lager.Logger, conn *websocket.Conn, request hijackR
 		}
 	}
 
-	process, err := container.Run(garden.ProcessSpec{
+	process, err := request.Container.Run(garden.ProcessSpec{
 		Path: request.Process.Path,
 		Args: request.Process.Args,
 		Env:  request.Process.Env,
@@ -150,6 +136,12 @@ func (s *Server) hijack(hLog lager.Logger, conn *websocket.Conn, request hijackR
 	})
 	if err != nil {
 		hLog.Error("failed-to-hijack", err)
+		return
+	}
+
+	err = request.Container.MarkAsHijacked()
+	if err != nil {
+		hLog.Error("failed-to-mark-container-as-hijacked", err)
 		return
 	}
 

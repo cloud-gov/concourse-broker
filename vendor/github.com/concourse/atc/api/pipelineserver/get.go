@@ -8,10 +8,8 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) GetPipeline(pipelineDB db.PipelineDB) http.Handler {
+func (s *Server) GetPipeline(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pipeline := pipelineDB.Pipeline()
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(present.Pipeline(pipeline))
 	})

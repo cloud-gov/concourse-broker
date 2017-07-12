@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager"
@@ -18,35 +19,39 @@ import (
 )
 
 type OAuthCallbackHandler struct {
-	logger          lager.Logger
-	providerFactory ProviderFactory
-	privateKey      *rsa.PrivateKey
-	tokenGenerator  TokenGenerator
-	teamDBFactory   db.TeamDBFactory
-	expire          time.Duration
+	logger             lager.Logger
+	providerFactory    ProviderFactory
+	privateKey         *rsa.PrivateKey
+	authTokenGenerator AuthTokenGenerator
+	csrfTokenGenerator CSRFTokenGenerator
+	teamFactory        db.TeamFactory
+	expire             time.Duration
+	isTLSEnabled       bool
 }
 
 func NewOAuthCallbackHandler(
 	logger lager.Logger,
 	providerFactory ProviderFactory,
 	privateKey *rsa.PrivateKey,
-	teamDBFactory db.TeamDBFactory,
+	teamFactory db.TeamFactory,
 	expire time.Duration,
+	isTLSEnabled bool,
 ) http.Handler {
 	return &OAuthCallbackHandler{
-		logger:          logger,
-		providerFactory: providerFactory,
-		privateKey:      privateKey,
-		tokenGenerator:  NewTokenGenerator(privateKey),
-		teamDBFactory:   teamDBFactory,
-		expire:          expire,
+		logger:             logger,
+		providerFactory:    providerFactory,
+		privateKey:         privateKey,
+		authTokenGenerator: NewAuthTokenGenerator(privateKey),
+		csrfTokenGenerator: NewCSRFTokenGenerator(),
+		teamFactory:        teamFactory,
+		expire:             expire,
+		isTLSEnabled:       isTLSEnabled,
 	}
 }
 
 func (handler *OAuthCallbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hLog := handler.logger.Session("callback")
 	providerName := r.FormValue(":provider")
-
 	paramState := r.FormValue("state")
 
 	cookieState, err := r.Cookie(OAuthStateCookie)
@@ -88,8 +93,8 @@ func (handler *OAuthCallbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	}
 
 	teamName := oauthState.TeamName
-	teamDB := handler.teamDBFactory.GetTeamDB(teamName)
-	team, found, err := teamDB.GetTeam()
+	team, found, err := handler.teamFactory.FindTeam(teamName)
+
 	if err != nil {
 		hLog.Error("failed-to-get-team", err)
 		http.Error(w, "failed to get team", http.StatusInternalServerError)
@@ -161,21 +166,35 @@ func (handler *OAuthCallbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 	exp := time.Now().Add(handler.expire)
 
-	tokenType, signedToken, err := handler.tokenGenerator.GenerateToken(exp, team.Name, team.Admin)
+	csrfToken, err := handler.csrfTokenGenerator.GenerateToken()
+	if err != nil {
+		hLog.Error("generate-csrf-token", err)
+		http.Error(w, "failed to generate csrf token", http.StatusInternalServerError)
+		return
+	}
+
+	tokenType, signedToken, err := handler.authTokenGenerator.GenerateToken(exp, team.Name(), team.Admin(), csrfToken)
 	if err != nil {
 		hLog.Error("failed-to-sign-token", err)
-		http.Error(w, "failed to sign token", http.StatusInternalServerError)
+		http.Error(w, "failed to generate auth token", http.StatusInternalServerError)
 		return
 	}
 
 	tokenStr := string(tokenType) + " " + string(signedToken)
 
-	http.SetCookie(w, &http.Cookie{
-		Name:    CookieName,
-		Value:   tokenStr,
-		Path:    "/",
-		Expires: exp,
-	})
+	authCookie := &http.Cookie{
+		Name:     AuthCookieName,
+		Value:    tokenStr,
+		Path:     "/",
+		Expires:  exp,
+		HttpOnly: true,
+	}
+	if handler.isTLSEnabled {
+		authCookie.Secure = true
+	}
+	// TODO: Add SameSite once Golang supports it
+	// https://github.com/golang/go/issues/15867
+	http.SetCookie(w, authCookie)
 
 	// Deletes the oauth state cookie to avoid CSRF attacks
 	http.SetCookie(w, &http.Cookie{
@@ -184,8 +203,25 @@ func (handler *OAuthCallbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		MaxAge: -1,
 	})
 
+	w.Header().Set(CSRFHeaderName, csrfToken)
+
+	if oauthState.Redirect != "" && !strings.HasPrefix(oauthState.Redirect, "/") {
+		hLog.Info("invalid-redirect")
+		http.Error(w, "invalid redirect", http.StatusBadRequest)
+		return
+	}
+
 	if oauthState.Redirect != "" {
-		http.Redirect(w, r, oauthState.Redirect, http.StatusTemporaryRedirect)
+		redirectURL, err := url.Parse(oauthState.Redirect)
+		if err != nil {
+			hLog.Info("invalid-redirect")
+			http.Error(w, "invalid redirect", http.StatusBadRequest)
+			return
+		}
+		queryParams := redirectURL.Query()
+		queryParams.Set("csrf_token", csrfToken)
+		redirectURL.RawQuery = queryParams.Encode()
+		http.Redirect(w, r, redirectURL.String(), http.StatusTemporaryRedirect)
 		return
 	}
 

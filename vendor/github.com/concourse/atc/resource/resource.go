@@ -4,9 +4,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/worker"
 )
 
@@ -14,10 +14,19 @@ import (
 
 type Resource interface {
 	Get(worker.Volume, IOConfig, atc.Source, atc.Params, atc.Version, <-chan os.Signal, chan<- struct{}) (VersionedSource, error)
-	Put(IOConfig, atc.Source, atc.Params, ArtifactSource, <-chan os.Signal, chan<- struct{}) (VersionedSource, error)
+	Put(IOConfig, atc.Source, atc.Params, <-chan os.Signal, chan<- struct{}) (VersionedSource, error)
 	Check(atc.Source, atc.Version) ([]atc.Version, error)
+	Container() worker.Container
+}
 
-	Release(*time.Duration)
+type ResourceType string
+
+type Session struct {
+	Metadata db.ContainerMetadata
+}
+
+type Metadata interface {
+	Env() []string
 }
 
 type IOConfig struct {
@@ -25,24 +34,7 @@ type IOConfig struct {
 	Stderr io.Writer
 }
 
-//go:generate counterfeiter . ArtifactSource
-
-type ArtifactSource interface {
-	StreamTo(ArtifactDestination) error
-
-	// VolumeOn returns a Volume object that contains the artifact from the
-	// ArtifactSource which is on a particular Worker. If a volume cannot be found
-	// or a volume manager cannot be found on the worker then it will return
-	// false.
-	VolumeOn(worker.Worker) (worker.Volume, bool, error)
-}
-
-//go:generate counterfeiter . ArtifactDestination
-
-type ArtifactDestination interface {
-	StreamIn(string, io.Reader) error
-}
-
+// TODO: check if we need it
 func ResourcesDir(suffix string) string {
 	return filepath.Join("/tmp", "build", suffix)
 }
@@ -53,12 +45,12 @@ type resource struct {
 	ScriptFailure bool
 }
 
-func NewResource(container worker.Container) Resource {
+func NewResourceForContainer(container worker.Container) Resource {
 	return &resource{
 		container: container,
 	}
 }
 
-func (resource *resource) Release(finalTTL *time.Duration) {
-	resource.container.Release(finalTTL)
+func (r *resource) Container() worker.Container {
+	return r.container
 }

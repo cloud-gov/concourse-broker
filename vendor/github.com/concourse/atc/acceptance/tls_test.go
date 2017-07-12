@@ -11,10 +11,10 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/sclevine/agouti"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/db"
-	"github.com/concourse/atc/db/dbfakes"
+	"github.com/concourse/atc/auth"
 	"github.com/lib/pq"
 )
 
@@ -22,27 +22,22 @@ var _ = Describe("TLS", func() {
 	var (
 		atcCommand *ATCCommand
 		dbListener *pq.Listener
+		page       *agouti.Page
+		err        error
 	)
 
 	BeforeEach(func() {
 		postgresRunner.Truncate()
-		dbConn = db.Wrap(postgresRunner.Open())
-
 		dbListener = pq.NewListener(postgresRunner.DataSourceName(), time.Second, time.Minute, nil)
-		bus := db.NewNotificationsBus(dbListener, dbConn)
 
-		pgxConn := postgresRunner.OpenPgx()
-		fakeConnector := new(dbfakes.FakeConnector)
-		retryableConn := &db.RetryableConn{Connector: fakeConnector, Conn: pgxConn}
-
-		lockFactory := db.NewLockFactory(retryableConn)
-		sqlDB = db.NewSQL(dbConn, bus, lockFactory)
+		page, err = agoutiDriver.NewPage()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
+		Expect(page.Destroy()).To(Succeed())
 		atcCommand.Stop()
 
-		Expect(dbConn.Close()).To(Succeed())
 		Expect(dbListener.Close()).To(Succeed())
 	})
 
@@ -81,7 +76,7 @@ var _ = Describe("TLS", func() {
 	}
 
 	It("accepts HTTPS requests", func() {
-		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, DEVELOPMENT_MODE)
+		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, NO_AUTH)
 		err := atcCommand.Start()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -105,7 +100,7 @@ var _ = Describe("TLS", func() {
 	})
 
 	It("does not redirect HTTP API traffic to HTTPS", func() {
-		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, DEVELOPMENT_MODE)
+		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, NO_AUTH)
 		err := atcCommand.Start()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -121,7 +116,7 @@ var _ = Describe("TLS", func() {
 	})
 
 	It("redirects HTTP web traffic to HTTPS", func() {
-		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, DEVELOPMENT_MODE)
+		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, NO_AUTH)
 		err := atcCommand.Start()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -171,5 +166,26 @@ var _ = Describe("TLS", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		Expect(redirectURLs[0]).To(Equal(atcCommand.TLSURL("/auth/github?team_name=main")))
+	})
+
+	Describe("CSRF and Auth cookies", func() {
+		It("generates secure auth token cookie and csrf cookie", func() {
+			atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{"--tls-bind-port", "--tls-cert", "--tls-key"}, NO_AUTH)
+			err := atcCommand.Start()
+			Expect(err).NotTo(HaveOccurred())
+
+			LoginWithNoAuth(page, atcCommand.URL(""))
+			cookies, err := page.GetCookies()
+			Expect(err).NotTo(HaveOccurred())
+			var authCookie *http.Cookie
+			for _, cookie := range cookies {
+				if cookie.Name == auth.AuthCookieName {
+					authCookie = cookie
+				}
+			}
+			Expect(authCookie).NotTo(BeNil())
+			Expect(authCookie.HttpOnly).To(BeTrue())
+			Expect(authCookie.Secure).To(BeTrue())
+		})
 	})
 })

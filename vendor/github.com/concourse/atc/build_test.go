@@ -73,11 +73,11 @@ var _ = Describe("Build", func() {
 		})
 
 		It("returns false if in any other state", func() {
-			states := []db.Status{
-				db.StatusAborted,
-				db.StatusErrored,
-				db.StatusFailed,
-				db.StatusSucceeded,
+			states := []db.BuildStatus{
+				db.BuildStatusAborted,
+				db.BuildStatusErrored,
+				db.BuildStatusFailed,
+				db.BuildStatusSucceeded,
 			}
 
 			for _, state := range states {

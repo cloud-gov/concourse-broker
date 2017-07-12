@@ -10,12 +10,12 @@ import (
 	"github.com/concourse/atc/db"
 )
 
-func (s *Server) ListBuildsWithVersionAsInput(pipelineDB db.PipelineDB) http.Handler {
+func (s *Server) ListBuildsWithVersionAsInput(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		versionIDString := r.FormValue(":resource_version_id")
 		versionID, _ := strconv.Atoi(versionIDString)
 
-		builds, err := pipelineDB.GetBuildsWithVersionAsInput(versionID)
+		builds, err := pipeline.GetBuildsWithVersionAsInput(versionID)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return

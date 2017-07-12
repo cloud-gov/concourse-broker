@@ -2,17 +2,19 @@ package resource
 
 import (
 	"errors"
-	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/creds"
+	"github.com/concourse/atc/db/lock"
 	"github.com/concourse/atc/worker"
 )
 
-const GetResourceLeaseInterval = 5 * time.Second
+const GetResourceLockInterval = 5 * time.Second
 
 var ErrFailedToGetLock = errors.New("failed-to-get-lock")
 var ErrInterrupted = errors.New("interrupted")
@@ -25,46 +27,31 @@ type Fetcher interface {
 		session Session,
 		tags atc.Tags,
 		teamID int,
-		resourceTypes atc.ResourceTypes,
-		cacheIdentifier CacheIdentifier,
+		resourceTypes creds.VersionedResourceTypes,
+		resourceInstance ResourceInstance,
 		metadata Metadata,
 		imageFetchingDelegate worker.ImageFetchingDelegate,
-		resourceOptions ResourceOptions,
 		signals <-chan os.Signal,
 		ready chan<- struct{},
-	) (FetchSource, error)
-}
-
-//go:generate counterfeiter . ResourceOptions
-
-type ResourceOptions interface {
-	IOConfig() IOConfig
-	Source() atc.Source
-	Params() atc.Params
-	Version() atc.Version
-	ResourceType() ResourceType
-	LockName(workerName string) (string, error)
+	) (VersionedSource, error)
 }
 
 func NewFetcher(
 	clock clock.Clock,
-	db LockDB,
-	fetchContainerCreatorFactory FetchContainerCreatorFactory,
+	lockFactory lock.LockFactory,
 	fetchSourceProviderFactory FetchSourceProviderFactory,
 ) Fetcher {
 	return &fetcher{
-		clock: clock,
-		db:    db,
-		fetchContainerCreatorFactory: fetchContainerCreatorFactory,
-		fetchSourceProviderFactory:   fetchSourceProviderFactory,
+		clock:                      clock,
+		lockFactory:                lockFactory,
+		fetchSourceProviderFactory: fetchSourceProviderFactory,
 	}
 }
 
 type fetcher struct {
-	clock                        clock.Clock
-	db                           LockDB
-	fetchContainerCreatorFactory FetchContainerCreatorFactory
-	fetchSourceProviderFactory   FetchSourceProviderFactory
+	clock                      clock.Clock
+	lockFactory                lock.LockFactory
+	fetchSourceProviderFactory FetchSourceProviderFactory
 }
 
 func (f *fetcher) Fetch(
@@ -72,47 +59,41 @@ func (f *fetcher) Fetch(
 	session Session,
 	tags atc.Tags,
 	teamID int,
-	resourceTypes atc.ResourceTypes,
-	cacheIdentifier CacheIdentifier,
+	resourceTypes creds.VersionedResourceTypes,
+	resourceInstance ResourceInstance,
 	metadata Metadata,
 	imageFetchingDelegate worker.ImageFetchingDelegate,
-	resourceOptions ResourceOptions,
 	signals <-chan os.Signal,
 	ready chan<- struct{},
-) (FetchSource, error) {
-	containerCreator := f.fetchContainerCreatorFactory.NewFetchContainerCreator(
-		logger,
-		resourceTypes,
-		tags,
-		teamID,
-		session,
-		metadata,
-		imageFetchingDelegate,
-	)
-
+) (VersionedSource, error) {
 	sourceProvider := f.fetchSourceProviderFactory.NewFetchSourceProvider(
 		logger,
 		session,
+		metadata,
 		tags,
 		teamID,
 		resourceTypes,
-		cacheIdentifier,
-		resourceOptions,
-		containerCreator,
+		resourceInstance,
+		imageFetchingDelegate,
 	)
 
-	ticker := f.clock.NewTicker(GetResourceLeaseInterval)
+	source, err := sourceProvider.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	ticker := f.clock.NewTicker(GetResourceLockInterval)
 	defer ticker.Stop()
 
-	fetchSource, err := f.fetchWithLease(logger, sourceProvider, resourceOptions.IOConfig(), signals, ready)
+	versionedSource, err := f.fetchWithLock(logger, source, imageFetchingDelegate.Stdout(), signals, ready)
 	if err != ErrFailedToGetLock {
-		return fetchSource, err
+		return versionedSource, err
 	}
 
 	for {
 		select {
 		case <-ticker.C():
-			fetchSource, err := f.fetchWithLease(logger, sourceProvider, resourceOptions.IOConfig(), signals, ready)
+			versionedSource, err := f.fetchWithLock(logger, source, imageFetchingDelegate.Stdout(), signals, ready)
 			if err != nil {
 				if err == ErrFailedToGetLock {
 					break
@@ -120,7 +101,7 @@ func (f *fetcher) Fetch(
 				return nil, err
 			}
 
-			return fetchSource, nil
+			return versionedSource, nil
 
 		case <-signals:
 			return nil, ErrInterrupted
@@ -128,29 +109,21 @@ func (f *fetcher) Fetch(
 	}
 }
 
-func (f *fetcher) fetchWithLease(
+func (f *fetcher) fetchWithLock(
 	logger lager.Logger,
-	sourceProvider FetchSourceProvider,
-	ioConfig IOConfig,
+	source FetchSource,
+	stdout io.Writer,
 	signals <-chan os.Signal,
 	ready chan<- struct{},
-) (FetchSource, error) {
-	source, err := sourceProvider.Get()
+) (VersionedSource, error) {
+	versionedSource, found, err := source.Find()
 	if err != nil {
 		return nil, err
 	}
 
-	isInitialized, err := source.IsInitialized()
-	if err != nil {
-		return nil, err
-	}
-
-	if isInitialized {
-		if ioConfig.Stdout != nil {
-			fmt.Fprintf(ioConfig.Stdout, "using version of resource found in cache\n")
-		}
+	if found {
 		close(ready)
-		return source, nil
+		return versionedSource, nil
 	}
 
 	lockName, err := source.LockName()
@@ -159,10 +132,8 @@ func (f *fetcher) fetchWithLease(
 	}
 
 	lockLogger := logger.Session("lock-task", lager.Data{"lock-name": lockName})
-	lockLogger.Info("tick")
 
-	lock, acquired, err := f.db.GetTaskLock(lockLogger, lockName)
-
+	lock, acquired, err := f.lockFactory.Acquire(lockLogger, lock.NewTaskLockID(lockName))
 	if err != nil {
 		lockLogger.Error("failed-to-get-lock", err)
 		return nil, ErrFailedToGetLock
@@ -175,10 +146,5 @@ func (f *fetcher) fetchWithLease(
 
 	defer lock.Release()
 
-	err = source.Initialize(signals, ready)
-	if err != nil {
-		return nil, err
-	}
-
-	return source, nil
+	return source.Create(signals, ready)
 }

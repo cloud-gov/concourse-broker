@@ -2,7 +2,6 @@ package present
 
 import (
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/config"
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/web"
 	"github.com/tedsuo/rata"
@@ -10,7 +9,7 @@ import (
 
 func Job(
 	teamName string,
-	job db.SavedJob,
+	job db.Job,
 	groups atc.GroupConfigs,
 	finishedBuild db.Build,
 	nextBuild db.Build,
@@ -20,8 +19,8 @@ func Job(
 	req, err := generator.CreateRequest(
 		web.GetJob,
 		rata.Params{
-			"job":           job.Name,
-			"pipeline_name": job.PipelineName,
+			"job":           job.Name(),
+			"pipeline_name": job.PipelineName(),
 			"team_name":     teamName,
 		},
 		nil,
@@ -45,14 +44,14 @@ func Job(
 	groupNames := []string{}
 	for _, group := range groups {
 		for _, name := range group.Jobs {
-			if name == job.Name {
+			if name == job.Name() {
 				groupNames = append(groupNames, group.Name)
 			}
 		}
 	}
 
 	sanitizedInputs := []atc.JobInput{}
-	for _, input := range config.JobInputs(job.Config) {
+	for _, input := range job.Config().Inputs() {
 		sanitizedInputs = append(sanitizedInputs, atc.JobInput{
 			Name:     input.Name,
 			Resource: input.Resource,
@@ -62,7 +61,7 @@ func Job(
 	}
 
 	sanitizedOutputs := []atc.JobOutput{}
-	for _, output := range config.JobOutputs(job.Config) {
+	for _, output := range job.Config().Outputs() {
 		sanitizedOutputs = append(sanitizedOutputs, atc.JobOutput{
 			Name:     output.Name,
 			Resource: output.Resource,
@@ -70,11 +69,13 @@ func Job(
 	}
 
 	return atc.Job{
-		Name:                 job.Name,
+		ID: job.ID(),
+
+		Name:                 job.Name(),
 		URL:                  req.URL.String(),
-		DisableManualTrigger: job.Config.DisableManualTrigger,
-		Paused:               job.Paused,
-		FirstLoggedBuildID:   job.FirstLoggedBuildID,
+		DisableManualTrigger: job.Config().DisableManualTrigger,
+		Paused:               job.Paused(),
+		FirstLoggedBuildID:   job.FirstLoggedBuildID(),
 		FinishedBuild:        presentedFinishedBuild,
 		NextBuild:            presentedNextBuild,
 

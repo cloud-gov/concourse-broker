@@ -2,6 +2,7 @@ package pipelineserver_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 
@@ -16,27 +17,25 @@ import (
 
 var _ = Describe("Handler", func() {
 	var (
-		response      *http.Response
-		server        *httptest.Server
-		delegate      *delegateHandler
-		teamDBFactory *dbfakes.FakeTeamDBFactory
-		teamDB        *dbfakes.FakeTeamDB
-		pipelineDB    *dbfakes.FakePipelineDB
-		handler       http.Handler
+		response *http.Response
+		server   *httptest.Server
+		delegate *delegateHandler
+
+		dbTeamFactory *dbfakes.FakeTeamFactory
+		fakeTeam      *dbfakes.FakeTeam
+		fakePipeline  *dbfakes.FakePipeline
+
+		handler http.Handler
 	)
 
 	BeforeEach(func() {
-		teamDBFactory = new(dbfakes.FakeTeamDBFactory)
-		teamDB = new(dbfakes.FakeTeamDB)
-		teamDBFactory.GetTeamDBReturns(teamDB)
-
-		pipelineDB = new(dbfakes.FakePipelineDB)
 		delegate = &delegateHandler{}
 
-		pipelineDBFactory := new(dbfakes.FakePipelineDBFactory)
-		pipelineDBFactory.BuildReturns(pipelineDB)
+		dbTeamFactory = new(dbfakes.FakeTeamFactory)
+		fakeTeam = new(dbfakes.FakeTeam)
+		fakePipeline = new(dbfakes.FakePipeline)
 
-		handlerFactory := pipelineserver.NewScopedHandlerFactory(pipelineDBFactory, teamDBFactory)
+		handlerFactory := pipelineserver.NewScopedHandlerFactory(dbTeamFactory)
 		handler = handlerFactory.HandlerFor(delegate.GetHandler)
 	})
 
@@ -54,24 +53,24 @@ var _ = Describe("Handler", func() {
 		server.Close()
 	})
 
-	Context("when pipelineDB is in request context", func() {
-		var contextPipelineDB db.PipelineDB
+	Context("when pipeline is in request context", func() {
+		var contextPipeline *dbfakes.FakePipeline
 
 		BeforeEach(func() {
-			contextPipelineDB = new(dbfakes.FakePipelineDB)
-			handler = &wrapHandler{handler, contextPipelineDB}
+			contextPipeline = new(dbfakes.FakePipeline)
+			handler = &wrapHandler{handler, contextPipeline}
 		})
 
-		It("calls scoped handler with pipelineDB from context", func() {
+		It("calls scoped handler with pipeline from context", func() {
 			Expect(delegate.IsCalled).To(BeTrue())
-			Expect(delegate.PipelineDB).To(BeIdenticalTo(contextPipelineDB))
+			Expect(delegate.Pipeline).To(BeIdenticalTo(contextPipeline))
 		})
 	})
 
-	Context("when pipelineDB is not in request context", func() {
-		Context("when pipeline does not exist", func() {
+	Context("when pipeline is not in request context", func() {
+		Context("when the team does not exist", func() {
 			BeforeEach(func() {
-				teamDB.GetPipelineByNameReturns(db.SavedPipeline{}, false, nil)
+				dbTeamFactory.FindTeamReturns(nil, false, nil)
 			})
 
 			It("returns 404", func() {
@@ -83,50 +82,100 @@ var _ = Describe("Handler", func() {
 			})
 		})
 
+		Context("when finding the team fails", func() {
+			BeforeEach(func() {
+				dbTeamFactory.FindTeamReturns(nil, false, errors.New("error"))
+			})
+
+			It("returns 500", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+			})
+
+			It("does not call the scoped handler", func() {
+				Expect(delegate.IsCalled).To(BeFalse())
+			})
+		})
+
 		Context("when pipeline exists", func() {
 			BeforeEach(func() {
-				teamDB.GetPipelineByNameReturns(db.SavedPipeline{Pipeline: db.Pipeline{Name: "some-pipeline"}}, true, nil)
+				fakeTeam.NameReturns("some-team")
+				dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 			})
 
 			It("looks up the team by the right name", func() {
-				Expect(teamDBFactory.GetTeamDBCallCount()).To(Equal(1))
-				Expect(teamDBFactory.GetTeamDBArgsForCall(0)).To(Equal("some-team"))
+				Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
+				Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("some-team"))
 			})
 
-			It("looks up the pipeline by the right name", func() {
-				Expect(teamDB.GetPipelineByNameCallCount()).To(Equal(1))
-				Expect(teamDB.GetPipelineByNameArgsForCall(0)).To(Equal("some-pipeline"))
+			Context("when the pipeline exists", func() {
+				BeforeEach(func() {
+					fakePipeline.NameReturns("some-pipeline")
+					fakeTeam.PipelineReturns(fakePipeline, true, nil)
+				})
+
+				It("looks up the pipeline by the right name", func() {
+					Expect(fakeTeam.PipelineCallCount()).To(Equal(1))
+					Expect(fakeTeam.PipelineArgsForCall(0)).To(Equal("some-pipeline"))
+				})
+
+				It("returns 200", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+				})
+
+				It("calls the scoped handler", func() {
+					Expect(delegate.IsCalled).To(BeTrue())
+				})
 			})
 
-			It("returns 200", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
+			Context("when the pipeline does not exist", func() {
+				BeforeEach(func() {
+					fakeTeam.PipelineReturns(nil, false, nil)
+				})
+
+				It("returns 404", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+				})
+
+				It("does not call the scoped handler", func() {
+					Expect(delegate.IsCalled).To(BeFalse())
+				})
 			})
 
-			It("calls the scoped handler", func() {
-				Expect(delegate.IsCalled).To(BeTrue())
+			Context("when finding the pipeline fails", func() {
+				BeforeEach(func() {
+					fakeTeam.PipelineReturns(nil, false, errors.New("error"))
+				})
+
+				It("returns 500", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				})
+
+				It("does not call the scoped handler", func() {
+					Expect(delegate.IsCalled).To(BeFalse())
+				})
 			})
 		})
 	})
 })
 
 type delegateHandler struct {
-	IsCalled   bool
-	PipelineDB db.PipelineDB
+	IsCalled bool
+	Pipeline db.Pipeline
 }
 
-func (handler *delegateHandler) GetHandler(pipelineDB db.PipelineDB) http.Handler {
+func (handler *delegateHandler) GetHandler(dbPipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.IsCalled = true
-		handler.PipelineDB = pipelineDB
+		handler.Pipeline = dbPipeline
 	})
 }
 
 type wrapHandler struct {
-	delegate          http.Handler
-	contextPipelineDB db.PipelineDB
+	delegate        http.Handler
+	contextPipeline db.Pipeline
 }
 
 func (h *wrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := context.WithValue(r.Context(), auth.PipelineDBKey, h.contextPipelineDB)
+	ctx := context.WithValue(r.Context(), auth.PipelineContextKey, h.contextPipeline)
 	h.delegate.ServeHTTP(w, r.WithContext(ctx))
 }

@@ -8,29 +8,25 @@ import (
 )
 
 type ScopedHandlerFactory struct {
-	pipelineDBFactory db.PipelineDBFactory
-	teamDBFactory     db.TeamDBFactory
+	teamDBFactory db.TeamFactory
 }
 
 func NewScopedHandlerFactory(
-	pipelineDBFactory db.PipelineDBFactory,
-	teamDBFactory db.TeamDBFactory,
+	teamDBFactory db.TeamFactory,
 ) *ScopedHandlerFactory {
 	return &ScopedHandlerFactory{
-		pipelineDBFactory: pipelineDBFactory,
-		teamDBFactory:     teamDBFactory,
+		teamDBFactory: teamDBFactory,
 	}
 }
 
-func (pdbh *ScopedHandlerFactory) HandlerFor(pipelineScopedHandler func(db.PipelineDB) http.Handler) http.HandlerFunc {
+func (pdbh *ScopedHandlerFactory) HandlerFor(pipelineScopedHandler func(db.Pipeline) http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pipelineDB, ok := r.Context().Value(auth.PipelineDBKey).(db.PipelineDB)
-		if !ok {
-			pipelineName := r.FormValue(":pipeline_name")
-			requestTeamName := r.FormValue(":team_name")
+		teamName := r.FormValue(":team_name")
+		pipelineName := r.FormValue(":pipeline_name")
 
-			teamDB := pdbh.teamDBFactory.GetTeamDB(requestTeamName)
-			savedPipeline, found, err := teamDB.GetPipelineByName(pipelineName)
+		pipeline, ok := r.Context().Value(auth.PipelineContextKey).(db.Pipeline)
+		if !ok {
+			dbTeam, found, err := pdbh.teamDBFactory.FindTeam(teamName)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
@@ -41,9 +37,18 @@ func (pdbh *ScopedHandlerFactory) HandlerFor(pipelineScopedHandler func(db.Pipel
 				return
 			}
 
-			pipelineDB = pdbh.pipelineDBFactory.Build(savedPipeline)
+			pipeline, found, err = dbTeam.Pipeline(pipelineName)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			if !found {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 		}
 
-		pipelineScopedHandler(pipelineDB).ServeHTTP(w, r)
+		pipelineScopedHandler(pipeline).ServeHTTP(w, r)
 	}
 }

@@ -35,9 +35,10 @@ func (s *Server) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(registration.GardenAddr) == 0 {
+	err = registration.Validate()
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, "missing address")
+		fmt.Fprintf(w, err.Error())
 		return
 	}
 
@@ -62,8 +63,13 @@ func (s *Server) RegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Containers: registration.ActiveContainers,
 	}.Emit(s.logger)
 
+	metric.WorkerVolumes{
+		WorkerName: registration.Name,
+		Volumes:    registration.ActiveVolumes,
+	}.Emit(s.logger)
+
 	if registration.Team != "" {
-		team, found, err := s.dbTeamFactory.FindTeam(registration.Team)
+		team, found, err := s.teamFactory.FindTeam(registration.Team)
 		if err != nil {
 			logger.Error("failed-to-get-team", err)
 			w.WriteHeader(http.StatusInternalServerError)

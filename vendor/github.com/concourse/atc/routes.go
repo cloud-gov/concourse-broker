@@ -27,11 +27,12 @@ const (
 	JobBadge       = "JobBadge"
 	MainJobBadge   = "MainJobBadge"
 
-	ListResources   = "ListResources"
-	GetResource     = "GetResource"
-	PauseResource   = "PauseResource"
-	UnpauseResource = "UnpauseResource"
-	CheckResource   = "CheckResource"
+	ListResources        = "ListResources"
+	GetResource          = "GetResource"
+	PauseResource        = "PauseResource"
+	UnpauseResource      = "UnpauseResource"
+	CheckResource        = "CheckResource"
+	CheckResourceWebHook = "CheckResourceWebHook"
 
 	ListResourceVersions          = "ListResourceVersions"
 	EnableResourceVersion         = "EnableResourceVersion"
@@ -39,16 +40,17 @@ const (
 	ListBuildsWithVersionAsInput  = "ListBuildsWithVersionAsInput"
 	ListBuildsWithVersionAsOutput = "ListBuildsWithVersionAsOutput"
 
-	ListAllPipelines = "ListAllPipelines"
-	ListPipelines    = "ListPipelines"
-	GetPipeline      = "GetPipeline"
-	DeletePipeline   = "DeletePipeline"
-	OrderPipelines   = "OrderPipelines"
-	PausePipeline    = "PausePipeline"
-	UnpausePipeline  = "UnpausePipeline"
-	ExposePipeline   = "ExposePipeline"
-	HidePipeline     = "HidePipeline"
-	RenamePipeline   = "RenamePipeline"
+	ListAllPipelines    = "ListAllPipelines"
+	ListPipelines       = "ListPipelines"
+	GetPipeline         = "GetPipeline"
+	DeletePipeline      = "DeletePipeline"
+	OrderPipelines      = "OrderPipelines"
+	PausePipeline       = "PausePipeline"
+	UnpausePipeline     = "UnpausePipeline"
+	ExposePipeline      = "ExposePipeline"
+	HidePipeline        = "HidePipeline"
+	RenamePipeline      = "RenamePipeline"
+	CreatePipelineBuild = "CreatePipelineBuild"
 
 	CreatePipe = "CreatePipe"
 	WritePipe  = "WritePipe"
@@ -93,7 +95,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/builds/:build_id/plan", Method: "GET", Name: GetBuildPlan},
 	{Path: "/api/v1/builds/:build_id/events", Method: "GET", Name: BuildEvents},
 	{Path: "/api/v1/builds/:build_id/resources", Method: "GET", Name: BuildResources},
-	{Path: "/api/v1/builds/:build_id/abort", Method: "POST", Name: AbortBuild},
+	{Path: "/api/v1/builds/:build_id/abort", Method: "PUT", Name: AbortBuild},
 	{Path: "/api/v1/builds/:build_id/preparation", Method: "GET", Name: GetBuildPreparation},
 
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/jobs", Method: "GET", Name: ListJobs},
@@ -118,12 +120,14 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/hide", Method: "PUT", Name: HidePipeline},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/versions-db", Method: "GET", Name: GetVersionsDB},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/rename", Method: "PUT", Name: RenamePipeline},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/builds", Method: "POST", Name: CreatePipelineBuild},
 
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources", Method: "GET", Name: ListResources},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name", Method: "GET", Name: GetResource},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/pause", Method: "PUT", Name: PauseResource},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/unpause", Method: "PUT", Name: UnpauseResource},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/check", Method: "POST", Name: CheckResource},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/check/webhook", Method: "POST", Name: CheckResourceWebHook},
 
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions", Method: "GET", Name: ListResourceVersions},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable", Method: "PUT", Name: EnableResourceVersion},

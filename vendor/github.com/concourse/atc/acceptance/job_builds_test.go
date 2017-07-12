@@ -9,33 +9,20 @@ import (
 
 	"code.cloudfoundry.org/urljoiner"
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 )
 
 var _ = Describe("Job Builds", func() {
 	var atcCommand *ATCCommand
-	var defaultTeam dbng.Team
 
 	BeforeEach(func() {
-		postgresRunner.Truncate()
-		dbngConn = dbng.Wrap(postgresRunner.Open())
-
-		teamFactory := dbng.NewTeamFactory(dbngConn)
-		var err error
-		var found bool
-		defaultTeam, found, err = teamFactory.FindTeam(atc.DefaultTeamName)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue()) // created by postgresRunner
-
 		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{}, BASIC_AUTH)
-		err = atcCommand.Start()
+		err := atcCommand.Start()
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
 		atcCommand.Stop()
-
-		Expect(dbngConn.Close()).To(Succeed())
 	})
 
 	Describe("viewing a jobs builds", func() {
@@ -61,7 +48,7 @@ var _ = Describe("Job Builds", func() {
 
 		Context("with a job in the configuration", func() {
 			var pipelineName = "some-pipeline"
-			var pipeline dbng.Pipeline
+			var pipeline db.Pipeline
 
 			BeforeEach(func() {
 				var err error
@@ -69,14 +56,18 @@ var _ = Describe("Job Builds", func() {
 					Jobs: atc.JobConfigs{
 						{Name: "job-name"},
 					},
-				}, dbng.ConfigVersion(1), dbng.PipelineUnpaused)
+				}, db.ConfigVersion(1), db.PipelineUnpaused)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			Context("with more then 100 job builds", func() {
 				BeforeEach(func() {
 					for i := 1; i < 104; i++ {
-						_, err := pipeline.CreateJobBuild("job-name")
+						job, found, err := pipeline.Job("job-name")
+						Expect(err).ToNot(HaveOccurred())
+						Expect(found).To(BeTrue())
+
+						_, err = job.CreateBuild()
 						Expect(err).NotTo(HaveOccurred())
 					}
 				})
@@ -98,11 +89,14 @@ var _ = Describe("Job Builds", func() {
 					Eventually(page.All(".js-build").Count).Should(Equal(100))
 
 					Expect(page.First(".pagination .disabled .fa-arrow-left")).Should(BeFound())
+					Expect(page.First(".pagination .fa-arrow-right")).Should(BeFound())
 					Expect(page.First(".pagination .fa-arrow-right").Click()).To(Succeed())
 					Eventually(page.All(".js-build").Count).Should(Equal(3))
 
 					Expect(page.First(".pagination .disabled .fa-arrow-right")).Should(BeFound())
+					Expect(page.First(".pagination .fa-arrow-left")).Should(BeFound())
 					Expect(page.First(".pagination .fa-arrow-left").Click()).To(Succeed())
+
 					Eventually(page.All(".js-build").Count).Should(Equal(100))
 				})
 			})

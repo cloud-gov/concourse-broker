@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	. "github.com/concourse/atc/exec"
+	"github.com/concourse/atc/worker"
 
 	"github.com/concourse/atc/exec/execfakes"
 	. "github.com/onsi/ginkgo"
@@ -21,7 +22,7 @@ var _ = Describe("Aggregate", func() {
 		aggregate StepFactory
 
 		inStep *execfakes.FakeStep
-		repo   *SourceRepository
+		repo   *worker.ArtifactRepository
 
 		outStepA *execfakes.FakeStep
 		outStepB *execfakes.FakeStep
@@ -40,7 +41,7 @@ var _ = Describe("Aggregate", func() {
 		}
 
 		inStep = new(execfakes.FakeStep)
-		repo = NewSourceRepository()
+		repo = worker.NewArtifactRepository()
 
 		outStepA = new(execfakes.FakeStep)
 		fakeStepA.UsingReturns(outStepA)
@@ -50,19 +51,17 @@ var _ = Describe("Aggregate", func() {
 	})
 
 	JustBeforeEach(func() {
-		step = aggregate.Using(inStep, repo)
+		step = aggregate.Using(repo)
 		process = ifrit.Invoke(step)
 	})
 
 	It("uses the input source for all steps", func() {
 		Expect(fakeStepA.UsingCallCount()).To(Equal(1))
-		step, repo := fakeStepA.UsingArgsForCall(0)
-		Expect(step).To(Equal(inStep))
+		repo := fakeStepA.UsingArgsForCall(0)
 		Expect(repo).To(Equal(repo))
 
 		Expect(fakeStepB.UsingCallCount()).To(Equal(1))
-		step, repo = fakeStepB.UsingArgsForCall(0)
-		Expect(step).To(Equal(inStep))
+		repo = fakeStepB.UsingArgsForCall(0)
 		Expect(repo).To(Equal(repo))
 	})
 
@@ -148,87 +147,59 @@ var _ = Describe("Aggregate", func() {
 		})
 	})
 
-	Describe("releasing", func() {
-		It("releases all sources", func() {
-			step.Release()
-
-			Expect(outStepA.ReleaseCallCount()).To(Equal(1))
-			Expect(outStepB.ReleaseCallCount()).To(Equal(1))
-		})
-	})
-
-	Describe("getting a result", func() {
-		Context("when the result type is bad", func() {
-			It("returns false", func() {
-				result := "this-is-bad"
-				Expect(step.Result(&result)).To(BeFalse())
-			})
-		})
-
-		Context("when getting a Success result", func() {
-			var result Success
-
+	Describe("Succeeded", func() {
+		Context("when all sources are successful", func() {
 			BeforeEach(func() {
-				result = false
+				outStepA.SucceededReturns(true)
+				outStepB.SucceededReturns(true)
 			})
 
-			Context("and all branches are successful", func() {
-				BeforeEach(func() {
-					outStepA.ResultStub = successResult(true)
-					outStepB.ResultStub = successResult(true)
-				})
+			It("yields true", func() {
+				Expect(step.Succeeded()).To(BeTrue())
+			})
+		})
 
-				It("yields true", func() {
-					Expect(step.Result(&result)).To(BeTrue())
-					Expect(result).To(Equal(Success(true)))
-				})
+		Context("and some branches are not successful", func() {
+			BeforeEach(func() {
+				outStepA.SucceededReturns(true)
+				outStepB.SucceededReturns(false)
 			})
 
-			Context("and some branches are not successful", func() {
-				BeforeEach(func() {
-					outStepA.ResultStub = successResult(true)
-					outStepB.ResultStub = successResult(false)
-				})
+			It("yields false", func() {
+				Expect(step.Succeeded()).To(BeFalse())
+			})
+		})
 
-				It("yields false", func() {
-					Expect(step.Result(&result)).To(BeTrue())
-					Expect(result).To(Equal(Success(false)))
-				})
+		//		Context("when some branches do not indicate success", func() {
+		//			BeforeEach(func() {
+		//				outStepA.ResultStub = successResult(true)
+		//				outStepB.ResultReturns(false)
+		//			})
+		//
+		//			It("only considers the branches that do", func() {
+		//				Expect(step.Succeeded(&result)).To(BeTrue())
+		//				Expect(result).To(Equal(Success(true)))
+		//			})
+		//		})
+
+		Context("when no branches indicate success", func() {
+			BeforeEach(func() {
+				outStepA.SucceededReturns(false)
+				outStepB.SucceededReturns(false)
 			})
 
-			Context("when some branches do not indicate success", func() {
-				BeforeEach(func() {
-					outStepA.ResultStub = successResult(true)
-					outStepB.ResultReturns(false)
-				})
+			It("returns false", func() {
+				Expect(step.Succeeded()).To(BeFalse())
+			})
+		})
 
-				It("only considers the branches that do", func() {
-					Expect(step.Result(&result)).To(BeTrue())
-					Expect(result).To(Equal(Success(true)))
-				})
+		Context("when there are no branches", func() {
+			BeforeEach(func() {
+				aggregate = Aggregate{}
 			})
 
-			Context("when no branches indicate success", func() {
-				BeforeEach(func() {
-					outStepA.ResultReturns(false)
-					outStepB.ResultReturns(false)
-				})
-
-				It("returns false", func() {
-					Expect(step.Result(&result)).To(BeFalse())
-					Expect(result).To(Equal(Success(false)))
-				})
-			})
-
-			Context("when there are no branches", func() {
-				BeforeEach(func() {
-					aggregate = Aggregate{}
-				})
-
-				It("returns true", func() {
-					Expect(step.Result(&result)).To(BeTrue())
-					Expect(result).To(Equal(Success(true)))
-				})
+			It("returns true", func() {
+				Expect(step.Succeeded()).To(BeTrue())
 			})
 		})
 	})

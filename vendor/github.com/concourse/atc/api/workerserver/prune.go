@@ -5,21 +5,34 @@ import (
 	"net/http"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 )
 
 func (s *Server) PruneWorker(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("pruning-worker")
 	workerName := r.FormValue(":worker_name")
 
-	err := s.dbWorkerFactory.PruneWorker(workerName)
-	if err == dbng.ErrWorkerNotPresent {
+	worker, found, err := s.dbWorkerFactory.GetWorker(workerName)
+	if err != nil {
+		logger.Error("failed-finding-worker-to-prune", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if !found {
 		logger.Error("failed-to-find-worker", err)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	if err == dbng.ErrCannotPruneRunningWorker {
+	err = worker.Prune()
+	if err == db.ErrWorkerNotPresent {
+		logger.Error("failed-to-find-worker", err)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if err == db.ErrCannotPruneRunningWorker {
 		logger.Error("failed-to-prune-non-stalled-worker", err)
 		responseBody := atc.PruneWorkerResponseBody{
 			Stderr: "cannot prune running worker",

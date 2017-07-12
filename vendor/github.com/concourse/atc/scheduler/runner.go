@@ -18,31 +18,29 @@ type BuildScheduler interface {
 	Schedule(
 		logger lager.Logger,
 		versions *algorithm.VersionsDB,
-		jobConfigs atc.JobConfigs,
-		resourceConfigs atc.ResourceConfigs,
-		resourceTypes atc.ResourceTypes,
+		jobs []db.Job,
+		resources db.Resources,
+		resourceTypes atc.VersionedResourceTypes,
 	) (map[string]time.Duration, error)
+
 	TriggerImmediately(
 		logger lager.Logger,
-		jobConfig atc.JobConfig,
-		resourceConfigs atc.ResourceConfigs,
-		resourceTypes atc.ResourceTypes,
+		job db.Job,
+		resources db.Resources,
+		resourceTypes atc.VersionedResourceTypes,
 	) (db.Build, Waiter, error)
-	SaveNextInputMapping(logger lager.Logger, job atc.JobConfig) error
+
+	SaveNextInputMapping(logger lager.Logger, job db.Job) error
 }
 
 var errPipelineRemoved = errors.New("pipeline removed")
 
 type Runner struct {
-	Logger lager.Logger
-
-	DB db.PipelineDB
-
+	Logger    lager.Logger
+	Pipeline  db.Pipeline
 	Scheduler BuildScheduler
-
-	Noop bool
-
-	Interval time.Duration
+	Noop      bool
+	Interval  time.Duration
 }
 
 func (runner *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
@@ -53,7 +51,7 @@ func (runner *Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error
 	}
 
 	runner.Logger.Info("start", lager.Data{
-		"inverval": runner.Interval.String(),
+		"interval": runner.Interval.String(),
 	})
 
 	defer runner.Logger.Info("done")
@@ -80,7 +78,7 @@ func (runner *Runner) tick(logger lager.Logger) error {
 		return nil
 	}
 
-	schedulingLease, acquired, err := runner.DB.AcquireSchedulingLock(logger, runner.Interval)
+	schedulingLock, acquired, err := runner.Pipeline.AcquireSchedulingLock(logger, runner.Interval)
 	if err != nil {
 		logger.Error("failed-to-acquire-scheduling-lock", err)
 		return nil
@@ -90,29 +88,29 @@ func (runner *Runner) tick(logger lager.Logger) error {
 		return nil
 	}
 
-	defer schedulingLease.Release()
+	defer schedulingLock.Release()
 
 	start := time.Now()
 
 	defer func() {
 		metric.SchedulingFullDuration{
-			PipelineName: runner.DB.GetPipelineName(),
+			PipelineName: runner.Pipeline.Name(),
 			Duration:     time.Since(start),
 		}.Emit(logger)
 	}()
 
-	versions, err := runner.DB.LoadVersionsDB()
+	versions, err := runner.Pipeline.LoadVersionsDB()
 	if err != nil {
 		logger.Error("failed-to-load-versions-db", err)
 		return err
 	}
 
 	metric.SchedulingLoadVersionsDuration{
-		PipelineName: runner.DB.GetPipelineName(),
+		PipelineName: runner.Pipeline.Name(),
 		Duration:     time.Since(start),
 	}.Emit(logger)
 
-	found, err := runner.DB.Reload()
+	found, err := runner.Pipeline.Reload()
 	if err != nil {
 		logger.Error("failed-to-update-pipeline-config", err)
 		return nil
@@ -122,15 +120,37 @@ func (runner *Runner) tick(logger lager.Logger) error {
 		return errPipelineRemoved
 	}
 
-	config := runner.DB.Config()
+	resources, err := runner.Pipeline.Resources()
+	if err != nil {
+		logger.Error("failed-to-get-resources", err)
+		return err
+	}
+
+	jobs, err := runner.Pipeline.Jobs()
+	if err != nil {
+		logger.Error("failed-to-get-jobs", err)
+		return err
+	}
+
+	resourceTypes, err := runner.Pipeline.ResourceTypes()
+	if err != nil {
+		logger.Error("failed-to-get-resource-types", err)
+		return err
+	}
 
 	sLog := logger.Session("scheduling")
 
-	schedulingTimes, err := runner.Scheduler.Schedule(sLog, versions, config.Jobs, config.Resources, config.ResourceTypes)
+	schedulingTimes, err := runner.Scheduler.Schedule(
+		sLog,
+		versions,
+		jobs,
+		resources,
+		resourceTypes.Deserialize(),
+	)
 
 	for jobName, duration := range schedulingTimes {
 		metric.SchedulingJobDuration{
-			PipelineName: runner.DB.GetPipelineName(),
+			PipelineName: runner.Pipeline.Name(),
 			JobName:      jobName,
 			Duration:     duration,
 		}.Emit(sLog)

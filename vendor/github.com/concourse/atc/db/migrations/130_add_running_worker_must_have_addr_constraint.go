@@ -1,21 +1,11 @@
 package migrations
 
-import "github.com/BurntSushi/migration"
+import "github.com/concourse/atc/db/migration"
 
 func AddRunningWorkerMustHaveAddrConstraint(tx migration.LimitedTx) error {
 	_, err := tx.Exec(`
 		ALTER TABLE workers
-		ALTER COLUMN baggageclaim_url DROP NOT NULL,
-		ALTER COLUMN baggageclaim_url SET DEFAULT NULL
-	`)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(`
-		UPDATE workers
-			SET baggageclaim_url = NULL
-			WHERE baggageclaim_url = ''
+		ALTER COLUMN baggageclaim_url DROP NOT NULL
 	`)
 	if err != nil {
 		return err

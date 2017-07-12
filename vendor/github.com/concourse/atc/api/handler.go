@@ -25,8 +25,8 @@ import (
 	"github.com/concourse/atc/api/volumeserver"
 	"github.com/concourse/atc/api/workerserver"
 	"github.com/concourse/atc/auth"
+	"github.com/concourse/atc/creds"
 	"github.com/concourse/atc/db"
-	"github.com/concourse/atc/dbng"
 	"github.com/concourse/atc/engine"
 	"github.com/concourse/atc/mainredirect"
 	"github.com/concourse/atc/worker"
@@ -40,21 +40,17 @@ func NewHandler(
 
 	wrapper wrappa.Wrappa,
 
-	tokenGenerator auth.TokenGenerator,
+	authTokenGenerator auth.AuthTokenGenerator,
+	csrfTokenGenerator auth.CSRFTokenGenerator,
 	providerFactory auth.ProviderFactory,
 	oAuthBaseURL string,
 
-	pipelineDBFactory db.PipelineDBFactory,
-	teamDBFactory db.TeamDBFactory,
-	dbTeamFactory dbng.TeamFactory,
-	dbWorkerFactory dbng.WorkerFactory,
-
-	teamsDB teamserver.TeamsDB,
-	buildsDB buildserver.BuildsDB,
-	containerDB containerserver.ContainerDB,
-	volumesDB volumeserver.VolumesDB,
-	pipeDB pipes.PipeDB,
-	pipelinesDB db.PipelinesDB,
+	dbTeamFactory db.TeamFactory,
+	dbPipelineFactory db.PipelineFactory,
+	dbWorkerFactory db.WorkerFactory,
+	volumeFactory db.VolumeFactory,
+	containerFactory db.ContainerFactory,
+	dbBuildFactory db.BuildFactory,
 
 	peerURL string,
 	eventHandlerFactory buildserver.EventHandlerFactory,
@@ -70,26 +66,32 @@ func NewHandler(
 
 	expire time.Duration,
 
+	isTLSEnabled bool,
+
 	cliDownloadsDir string,
 	version string,
+	workerVersion string,
+	variablesFactory creds.VariablesFactory,
 ) (http.Handler, error) {
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
 	if err != nil {
 		return nil, err
 	}
 
-	pipelineHandlerFactory := pipelineserver.NewScopedHandlerFactory(pipelineDBFactory, teamDBFactory)
+	pipelineHandlerFactory := pipelineserver.NewScopedHandlerFactory(dbTeamFactory)
 	buildHandlerFactory := buildserver.NewScopedHandlerFactory(logger)
-	teamHandlerFactory := NewTeamScopedHandlerFactory(logger, teamDBFactory)
+	teamHandlerFactory := NewTeamScopedHandlerFactory(logger, dbTeamFactory)
 
 	authServer := authserver.NewServer(
 		logger,
 		externalURL,
 		oAuthBaseURL,
-		tokenGenerator,
+		authTokenGenerator,
+		csrfTokenGenerator,
 		providerFactory,
-		teamDBFactory,
+		dbTeamFactory,
 		expire,
+		isTLSEnabled,
 	)
 
 	buildServer := buildserver.NewServer(
@@ -97,34 +99,34 @@ func NewHandler(
 		externalURL,
 		engine,
 		workerClient,
-		teamDBFactory,
-		buildsDB,
+		dbTeamFactory,
+		dbBuildFactory,
 		eventHandlerFactory,
 		drain,
 	)
 
-	jobServer := jobserver.NewServer(logger, schedulerFactory, externalURL)
+	jobServer := jobserver.NewServer(logger, schedulerFactory, externalURL, variablesFactory)
 	resourceServer := resourceserver.NewServer(logger, scannerFactory)
 	versionServer := versionserver.NewServer(logger, externalURL)
-	pipeServer := pipes.NewServer(logger, peerURL, externalURL, pipeDB)
+	pipeServer := pipes.NewServer(logger, peerURL, externalURL, dbTeamFactory)
 
-	pipelineServer := pipelineserver.NewServer(logger, teamDBFactory, pipelinesDB)
+	pipelineServer := pipelineserver.NewServer(logger, dbTeamFactory, dbPipelineFactory, engine)
 
-	configServer := configserver.NewServer(logger, teamDBFactory, dbTeamFactory)
+	configServer := configserver.NewServer(logger, dbTeamFactory)
 
-	workerServer := workerserver.NewServer(logger, teamDBFactory, dbTeamFactory, dbWorkerFactory)
+	workerServer := workerserver.NewServer(logger, dbTeamFactory, dbWorkerFactory)
 
 	logLevelServer := loglevelserver.NewServer(logger, sink)
 
 	cliServer := cliserver.NewServer(logger, absCLIDownloadsDir)
 
-	containerServer := containerserver.NewServer(logger, workerClient, containerDB, teamDBFactory)
+	containerServer := containerserver.NewServer(logger, workerClient, variablesFactory)
 
-	volumesServer := volumeserver.NewServer(logger, volumesDB, teamDBFactory)
+	volumesServer := volumeserver.NewServer(logger, volumeFactory)
 
-	teamServer := teamserver.NewServer(logger, teamDBFactory, teamsDB)
+	teamServer := teamserver.NewServer(logger, dbTeamFactory)
 
-	infoServer := infoserver.NewServer(logger, version)
+	infoServer := infoserver.NewServer(logger, version, workerVersion)
 
 	handlers := map[string]http.Handler{
 		atc.ListAuthMethods: http.HandlerFunc(authServer.ListAuthMethods),
@@ -153,23 +155,25 @@ func NewHandler(
 		atc.JobBadge:       pipelineHandlerFactory.HandlerFor(jobServer.JobBadge),
 		atc.MainJobBadge:   mainredirect.Handler{atc.Routes, atc.JobBadge},
 
-		atc.ListAllPipelines: http.HandlerFunc(pipelineServer.ListAllPipelines),
-		atc.ListPipelines:    http.HandlerFunc(pipelineServer.ListPipelines),
-		atc.GetPipeline:      pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
-		atc.DeletePipeline:   pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
-		atc.OrderPipelines:   http.HandlerFunc(pipelineServer.OrderPipelines),
-		atc.PausePipeline:    pipelineHandlerFactory.HandlerFor(pipelineServer.PausePipeline),
-		atc.UnpausePipeline:  pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
-		atc.ExposePipeline:   pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
-		atc.HidePipeline:     pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
-		atc.GetVersionsDB:    pipelineHandlerFactory.HandlerFor(pipelineServer.GetVersionsDB),
-		atc.RenamePipeline:   pipelineHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
+		atc.ListAllPipelines:    http.HandlerFunc(pipelineServer.ListAllPipelines),
+		atc.ListPipelines:       http.HandlerFunc(pipelineServer.ListPipelines),
+		atc.GetPipeline:         pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
+		atc.DeletePipeline:      pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
+		atc.OrderPipelines:      http.HandlerFunc(pipelineServer.OrderPipelines),
+		atc.PausePipeline:       pipelineHandlerFactory.HandlerFor(pipelineServer.PausePipeline),
+		atc.UnpausePipeline:     pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
+		atc.ExposePipeline:      pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
+		atc.HidePipeline:        pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
+		atc.GetVersionsDB:       pipelineHandlerFactory.HandlerFor(pipelineServer.GetVersionsDB),
+		atc.RenamePipeline:      pipelineHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
+		atc.CreatePipelineBuild: pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),
 
-		atc.ListResources:   pipelineHandlerFactory.HandlerFor(resourceServer.ListResources),
-		atc.GetResource:     pipelineHandlerFactory.HandlerFor(resourceServer.GetResource),
-		atc.PauseResource:   pipelineHandlerFactory.HandlerFor(resourceServer.PauseResource),
-		atc.UnpauseResource: pipelineHandlerFactory.HandlerFor(resourceServer.UnpauseResource),
-		atc.CheckResource:   pipelineHandlerFactory.HandlerFor(resourceServer.CheckResource),
+		atc.ListResources:        pipelineHandlerFactory.HandlerFor(resourceServer.ListResources),
+		atc.GetResource:          pipelineHandlerFactory.HandlerFor(resourceServer.GetResource),
+		atc.PauseResource:        pipelineHandlerFactory.HandlerFor(resourceServer.PauseResource),
+		atc.UnpauseResource:      pipelineHandlerFactory.HandlerFor(resourceServer.UnpauseResource),
+		atc.CheckResource:        pipelineHandlerFactory.HandlerFor(resourceServer.CheckResource),
+		atc.CheckResourceWebHook: pipelineHandlerFactory.HandlerFor(resourceServer.CheckResourceWebHook),
 
 		atc.ListResourceVersions:          pipelineHandlerFactory.HandlerFor(versionServer.ListResourceVersions),
 		atc.EnableResourceVersion:         pipelineHandlerFactory.HandlerFor(versionServer.EnableResourceVersion),

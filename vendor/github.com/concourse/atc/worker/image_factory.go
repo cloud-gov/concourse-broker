@@ -7,37 +7,48 @@ import (
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/creds"
+	"github.com/concourse/atc/db"
 )
 
 //go:generate counterfeiter . ImageFactory
 
 type ImageFactory interface {
-	NewImage(
+	GetImage(
 		logger lager.Logger,
-		cancel <-chan os.Signal,
-		imageResource atc.ImageResource,
-		id Identifier,
-		metadata Metadata,
-		tags atc.Tags,
+		workerClient Worker,
+		volumeClient VolumeClient,
+		imageSpec ImageSpec,
 		teamID int,
-		resourceTypes atc.ResourceTypes,
-		workerClient Client,
 		delegate ImageFetchingDelegate,
-		privileged bool,
-	) Image
+		resourceUser db.ResourceUser,
+		resourceTypes creds.VersionedResourceTypes,
+	) (Image, error)
+}
+
+type FetchedImage struct {
+	Metadata   ImageMetadata
+	Version    atc.Version
+	URL        string
+	Privileged bool
 }
 
 //go:generate counterfeiter . Image
 
 type Image interface {
-	Fetch() (Volume, io.ReadCloser, atc.Version, error)
+	FetchForContainer(
+		logger lager.Logger,
+		cancel <-chan os.Signal,
+		container db.CreatingContainer,
+	) (FetchedImage, error)
 }
 
 //go:generate counterfeiter . ImageFetchingDelegate
 
 type ImageFetchingDelegate interface {
+	Stdout() io.Writer
 	Stderr() io.Writer
-	ImageVersionDetermined(VolumeIdentifier) error
+	ImageVersionDetermined(*db.UsedResourceCache) error
 }
 
 type ImageMetadata struct {
@@ -47,5 +58,6 @@ type ImageMetadata struct {
 
 type NoopImageFetchingDelegate struct{}
 
-func (NoopImageFetchingDelegate) Stderr() io.Writer                             { return ioutil.Discard }
-func (NoopImageFetchingDelegate) ImageVersionDetermined(VolumeIdentifier) error { return nil }
+func (NoopImageFetchingDelegate) Stdout() io.Writer                                  { return ioutil.Discard }
+func (NoopImageFetchingDelegate) Stderr() io.Writer                                  { return ioutil.Discard }
+func (NoopImageFetchingDelegate) ImageVersionDetermined(*db.UsedResourceCache) error { return nil }

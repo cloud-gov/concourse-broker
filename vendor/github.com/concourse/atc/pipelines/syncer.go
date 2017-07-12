@@ -8,19 +8,12 @@ import (
 	"github.com/tedsuo/ifrit"
 )
 
-//go:generate counterfeiter . SyncherDB
-
-type SyncherDB interface {
-	GetAllPipelines() ([]db.SavedPipeline, error)
-}
-
-type PipelineRunnerFactory func(db.PipelineDB) ifrit.Runner
+type PipelineRunnerFactory func(db.Pipeline) ifrit.Runner
 
 type Syncer struct {
 	logger lager.Logger
 
-	syncherDB             SyncherDB
-	pipelineDBFactory     db.PipelineDBFactory
+	pipelineFactory       db.PipelineFactory
 	pipelineRunnerFactory PipelineRunnerFactory
 
 	runningPipelines map[int]runningPipeline
@@ -36,14 +29,12 @@ type runningPipeline struct {
 
 func NewSyncer(
 	logger lager.Logger,
-	syncherDB SyncherDB,
-	pipelineDBFactory db.PipelineDBFactory,
+	pipelineFactory db.PipelineFactory,
 	pipelineRunnerFactory PipelineRunnerFactory,
 ) *Syncer {
 	return &Syncer{
 		logger:                logger,
-		syncherDB:             syncherDB,
-		pipelineDBFactory:     pipelineDBFactory,
+		pipelineFactory:       pipelineFactory,
 		pipelineRunnerFactory: pipelineRunnerFactory,
 
 		runningPipelines: map[int]runningPipeline{},
@@ -51,7 +42,7 @@ func NewSyncer(
 }
 
 func (syncer *Syncer) Sync() {
-	pipelines, err := syncer.syncherDB.GetAllPipelines()
+	pipelines, err := syncer.pipelineFactory.AllPipelines()
 	if err != nil {
 		syncer.logger.Error("failed-to-get-pipelines", err)
 		return
@@ -67,11 +58,11 @@ func (syncer *Syncer) Sync() {
 
 		var found bool
 		for _, pipeline := range pipelines {
-			if pipeline.Paused {
+			if pipeline.Paused() {
 				continue
 			}
 
-			if pipeline.ID == id && pipeline.Name == runningPipeline.Name {
+			if pipeline.ID() == id && pipeline.Name() == runningPipeline.Name {
 				found = true
 			}
 		}
@@ -84,19 +75,18 @@ func (syncer *Syncer) Sync() {
 	}
 
 	for _, pipeline := range pipelines {
-		if pipeline.Paused || syncer.isPipelineRunning(pipeline.ID) {
+		if pipeline.Paused() || syncer.isPipelineRunning(pipeline.ID()) {
 			continue
 		}
 
-		pipelineDB := syncer.pipelineDBFactory.Build(pipeline)
-		runner := syncer.pipelineRunnerFactory(pipelineDB)
+		runner := syncer.pipelineRunnerFactory(pipeline)
 
-		syncer.logger.Debug("starting-pipeline", lager.Data{"pipeline": pipeline.Name})
+		syncer.logger.Debug("starting-pipeline", lager.Data{"pipeline": pipeline.Name()})
 
 		process := ifrit.Invoke(runner)
 
-		syncer.runningPipelines[pipeline.ID] = runningPipeline{
-			Name:    pipeline.Name,
+		syncer.runningPipelines[pipeline.ID()] = runningPipeline{
+			Name:    pipeline.Name(),
 			Process: process,
 			Exited:  process.Wait(),
 		}

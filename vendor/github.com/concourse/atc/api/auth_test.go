@@ -1,33 +1,37 @@
 package api_test
 
 import (
+	"encoding/json"
 	"errors"
 	"io/ioutil"
 	"net/http"
 	"time"
 
-	"github.com/concourse/atc/db"
+	"github.com/concourse/atc"
+	"github.com/concourse/atc/auth/provider"
+	"github.com/concourse/atc/auth/provider/providerfakes"
+	"github.com/concourse/atc/db/dbfakes"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Auth API", func() {
 	Describe("GET /api/v1/teams/:team_name/auth/token", func() {
-		var request *http.Request
-		var response *http.Response
+		var (
+			request  *http.Request
+			response *http.Response
 
-		var savedTeam db.SavedTeam
-
+			fakeTeam *dbfakes.FakeTeam
+		)
 		BeforeEach(func() {
-			savedTeam = db.SavedTeam{
-				ID: 0,
-				Team: db.Team{
-					Name:  "some-team",
-					Admin: true,
-				},
-			}
+			fakeTeam = new(dbfakes.FakeTeam)
+			fakeTeam.IDReturns(0)
+			fakeTeam.NameReturns("some-team")
+			fakeTeam.AdminReturns(true)
 
-			teamDB.GetTeamReturns(savedTeam, true, nil)
+			dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+
+			fakeCSRFTokenGenerator.GenerateTokenReturns("some-csrf-token", nil)
 
 			var err error
 			request, err = http.NewRequest("GET", server.URL+"/api/v1/teams/some-team/auth/token", nil)
@@ -40,68 +44,70 @@ var _ = Describe("Auth API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		Context("when authenticated", func() {
+		Context("when the request's authorization is basic auth", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				getTokenValidator.IsAuthenticatedReturns(true)
+				request.Header.Add("Authorization", "Basic grylls")
 			})
 
-			Context("when the request's authorization is some other form", func() {
+			Context("when generating the token succeeds", func() {
 				BeforeEach(func() {
-					request.Header.Add("Authorization", "Basic grylls")
+					fakeAuthTokenGenerator.GenerateTokenReturns("some type", "some value", nil)
+					fakeCSRFTokenGenerator.GenerateTokenReturns("some-csrf-token", nil)
 				})
 
-				Context("when generating the token succeeds", func() {
-					BeforeEach(func() {
-						fakeTokenGenerator.GenerateTokenReturns("some type", "some value", nil)
-					})
-
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns application/json", func() {
-						Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-					})
-
-					It("returns a token valid for 1 day", func() {
-						body, err := ioutil.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`{"type":"some type","value":"some value"}`))
-
-						expiration, teamName, isAdmin := fakeTokenGenerator.GenerateTokenArgsForCall(0)
-						Expect(expiration).To(BeTemporally("~", time.Now().Add(24*time.Hour), time.Minute))
-						Expect(teamName).To(Equal(savedTeam.Name))
-						Expect(isAdmin).To(Equal(savedTeam.Admin))
-					})
+				It("returns 200 OK", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
 				})
 
-				Context("when generating the token fails", func() {
-					BeforeEach(func() {
-						fakeTokenGenerator.GenerateTokenReturns("", "", errors.New("nope"))
-					})
-
-					It("returns Internal Server Error", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-					})
+				It("returns application/json", func() {
+					Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
 				})
 
-				Context("when the team can't be found", func() {
-					BeforeEach(func() {
-						fakeTokenGenerator.GenerateTokenReturns("", "", errors.New("nope"))
-						teamDB.GetTeamReturns(db.SavedTeam{}, false, nil)
-					})
+				It("returns CSRF token", func() {
+					Expect(response.Header.Get("X-Csrf-Token")).To(Equal("some-csrf-token"))
+				})
 
-					It("returns unauthorized", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
+				It("returns a token valid for 1 day", func() {
+					body, err := ioutil.ReadAll(response.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					Expect(body).To(MatchJSON(`{"type":"some type","value":"some value"}`))
+
+					expiration, teamName, isAdmin, csrfToken := fakeAuthTokenGenerator.GenerateTokenArgsForCall(0)
+					Expect(expiration).To(BeTemporally("~", time.Now().Add(24*time.Hour), time.Minute))
+					Expect(teamName).To(Equal("some-team"))
+					Expect(isAdmin).To(Equal(true))
+					Expect(csrfToken).To(Equal("some-csrf-token"))
+				})
+			})
+
+			Context("when generating the token fails", func() {
+				BeforeEach(func() {
+					fakeAuthTokenGenerator.GenerateTokenReturns("", "", errors.New("nope"))
+				})
+
+				It("returns Internal Server Error", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+				})
+			})
+
+			Context("when the team can't be found", func() {
+				BeforeEach(func() {
+					fakeAuthTokenGenerator.GenerateTokenReturns("", "", errors.New("nope"))
+					dbTeamFactory.FindTeamReturns(nil, false, nil)
+				})
+
+				It("returns unauthorized", func() {
+					Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 				})
 			})
 		})
 
-		Context("when not authenticated", func() {
+		Context("when the request's authorization is bearer token", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(true)
+				getTokenValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns Unauthorized", func() {
@@ -109,44 +115,61 @@ var _ = Describe("Auth API", func() {
 			})
 
 			It("does not generate a token", func() {
-				Expect(fakeTokenGenerator.GenerateTokenCallCount()).To(Equal(0))
+				Expect(fakeAuthTokenGenerator.GenerateTokenCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when not authenticated", func() {
+			BeforeEach(func() {
+				jwtValidator.IsAuthenticatedReturns(false)
+			})
+
+			It("returns Unauthorized", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+			})
+
+			It("does not generate a token", func() {
+				Expect(fakeAuthTokenGenerator.GenerateTokenCallCount()).To(Equal(0))
 			})
 		})
 	})
 
 	Describe("GET /api/v1/teams/some-team/auth/methods", func() {
 		Context("when providers are present", func() {
-			var request *http.Request
-			var response *http.Response
+			var (
+				request  *http.Request
+				response *http.Response
 
-			var savedTeam db.SavedTeam
-
+				fakeTeam            *dbfakes.FakeTeam
+				fakeProviderFactory *providerfakes.FakeTeamProvider
+				fakeProviderName    = "FakeProvider"
+				fakeAuthConfig      *providerfakes.FakeAuthConfig
+			)
 			BeforeEach(func() {
-				savedTeam = db.SavedTeam{
-					ID: 0,
-					Team: db.Team{
-						Name: "some-team",
-						BasicAuth: &db.BasicAuth{
-							BasicAuthUsername: "user",
-							BasicAuthPassword: "password",
-						},
-						UAAAuth: &db.UAAAuth{
-							ClientID:     "client-id",
-							ClientSecret: "client-secret",
-						},
-						GitHubAuth: &db.GitHubAuth{
-							ClientID:     "client-id",
-							ClientSecret: "client-secret",
-						},
-						GenericOAuth: &db.GenericOAuth{
-							ClientID:     "client-id",
-							ClientSecret: "client-secret",
-							DisplayName:  "custom secure auth",
-						},
-					},
-				}
+				fakeTeam = new(dbfakes.FakeTeam)
+				fakeProviderFactory = new(providerfakes.FakeTeamProvider)
+				fakeAuthConfig = new(providerfakes.FakeAuthConfig)
 
-				teamDB.GetTeamReturns(savedTeam, true, nil)
+				provider.Register(fakeProviderName, fakeProviderFactory)
+
+				data := []byte(`{"mcdonalds": "fries"}`)
+				fakeTeam.IDReturns(0)
+				fakeTeam.NameReturns("some-team")
+				fakeTeam.BasicAuthReturns(&atc.BasicAuth{
+					BasicAuthUsername: "user",
+					BasicAuthPassword: "password",
+				})
+				fakeTeam.AuthReturns(map[string]*json.RawMessage{
+					fakeProviderName: (*json.RawMessage)(&data),
+				})
+
+				dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
+				fakeProviderFactory.UnmarshalConfigReturns(fakeAuthConfig, nil)
+				fakeAuthConfig.AuthMethodReturns(atc.AuthMethod{
+					Type:        atc.AuthTypeOAuth,
+					DisplayName: "fake display",
+					AuthURL:     "https://example.com/some-auth-url",
+				})
 
 				var err error
 				request, err = http.NewRequest("GET", server.URL+"/api/v1/teams/some-team/auth/methods", nil)
@@ -159,9 +182,9 @@ var _ = Describe("Auth API", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("gets the teamDB for the right team name", func() {
-				Expect(teamDBFactory.GetTeamDBCallCount()).To(Equal(1))
-				Expect(teamDBFactory.GetTeamDBArgsForCall(0)).To(Equal("some-team"))
+			It("gets the team for the right team name", func() {
+				Expect(dbTeamFactory.FindTeamCallCount()).To(Equal(1))
+				Expect(dbTeamFactory.FindTeamArgsForCall(0)).To(Equal("some-team"))
 			})
 
 			It("returns 200 OK", func() {
@@ -179,18 +202,8 @@ var _ = Describe("Auth API", func() {
 				Expect(body).To(MatchJSON(`[
 					{
 						"type": "oauth",
-						"display_name": "GitHub",
-						"auth_url": "https://oauth.example.com/auth/github?team_name=some-team"
-					},
-					{
-						"type": "oauth",
-						"display_name": "UAA",
-						"auth_url": "https://oauth.example.com/auth/uaa?team_name=some-team"
-					},
-					{
-						"type": "oauth",
-						"display_name": "custom secure auth",
-						"auth_url": "https://oauth.example.com/auth/oauth?team_name=some-team"
+						"display_name": "fake display",
+						"auth_url": "https://example.com/some-auth-url"
 					},
 					{
 						"type": "basic",
@@ -205,17 +218,14 @@ var _ = Describe("Auth API", func() {
 			var request *http.Request
 			var response *http.Response
 
-			var savedTeam db.SavedTeam
+			var fakeTeam *dbfakes.FakeTeam
 
 			BeforeEach(func() {
-				savedTeam = db.SavedTeam{
-					ID: 0,
-					Team: db.Team{
-						Name: "some-team",
-					},
-				}
+				fakeTeam = new(dbfakes.FakeTeam)
+				fakeTeam.IDReturns(0)
+				fakeTeam.NameReturns("some-team")
 
-				teamDB.GetTeamReturns(savedTeam, true, nil)
+				dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 
 				var err error
 				request, err = http.NewRequest("GET", server.URL+"/api/v1/teams/some-team/auth/methods", nil)
@@ -247,9 +257,11 @@ var _ = Describe("Auth API", func() {
 		Context("when team cannot be found", func() {
 			var request *http.Request
 			var response *http.Response
+			var fakeTeam *dbfakes.FakeTeam
 
 			BeforeEach(func() {
-				teamDB.GetTeamReturns(db.SavedTeam{}, false, nil)
+				fakeTeam = new(dbfakes.FakeTeam)
+				dbTeamFactory.FindTeamReturns(fakeTeam, false, nil)
 
 				var err error
 				request, err = http.NewRequest("GET", server.URL+"/api/v1/teams/some-team/auth/methods", nil)
@@ -273,18 +285,15 @@ var _ = Describe("Auth API", func() {
 			request  *http.Request
 			response *http.Response
 
-			err       error
-			savedTeam db.SavedTeam
+			err      error
+			fakeTeam *dbfakes.FakeTeam
 		)
 
 		BeforeEach(func() {
-			savedTeam = db.SavedTeam{
-				ID: 5,
-				Team: db.Team{
-					Name:  "some-team",
-					Admin: true,
-				},
-			}
+			fakeTeam = new(dbfakes.FakeTeam)
+			fakeTeam.IDReturns(5)
+			fakeTeam.NameReturns("some-team")
+			fakeTeam.AdminReturns(true)
 
 			request, err = http.NewRequest("GET", server.URL+"/api/v1/user", nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -297,7 +306,7 @@ var _ = Describe("Auth API", func() {
 
 		Context("when authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(true)
+				jwtValidator.IsAuthenticatedReturns(true)
 			})
 
 			Context("as system", func() {
@@ -337,7 +346,7 @@ var _ = Describe("Auth API", func() {
 						Context("and fails to retrieve team from db", func() {
 							BeforeEach(func() {
 								userContextReader.GetSystemReturns(false, false)
-								teamDB.GetTeamReturns(db.SavedTeam{}, false, errors.New("disaster"))
+								dbTeamFactory.FindTeamReturns(nil, false, errors.New("disaster"))
 							})
 
 							It("returns 500", func() {
@@ -347,7 +356,7 @@ var _ = Describe("Auth API", func() {
 
 						Context("and team not found in the db", func() {
 							BeforeEach(func() {
-								teamDB.GetTeamReturns(db.SavedTeam{}, false, nil)
+								dbTeamFactory.FindTeamReturns(nil, false, nil)
 							})
 
 							It("returns empty json", func() {
@@ -360,7 +369,7 @@ var _ = Describe("Auth API", func() {
 
 						Context("and team found in the db", func() {
 							BeforeEach(func() {
-								teamDB.GetTeamReturns(savedTeam, true, nil)
+								dbTeamFactory.FindTeamReturns(fakeTeam, true, nil)
 							})
 
 							It("returns 200 OK", func() {
@@ -385,7 +394,7 @@ var _ = Describe("Auth API", func() {
 
 		Context("when not authenticated", func() {
 			BeforeEach(func() {
-				authValidator.IsAuthenticatedReturns(false)
+				jwtValidator.IsAuthenticatedReturns(false)
 			})
 
 			It("returns 401 Unauthorized", func() {

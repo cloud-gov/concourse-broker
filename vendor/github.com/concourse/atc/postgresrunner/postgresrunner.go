@@ -9,10 +9,13 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
-	"github.com/BurntSushi/migration"
+	"code.cloudfoundry.org/lager/lagertest"
+
+	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/migration"
 	"github.com/concourse/atc/db/migrations"
-	"github.com/jackc/pgx"
 	"github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
@@ -37,35 +40,36 @@ func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error 
 	currentUser, err := user.Current()
 	Expect(err).NotTo(HaveOccurred())
 
-	var initCmd, startCmd *exec.Cmd
-
 	initdbPath, err := exec.LookPath("initdb")
 	Expect(err).NotTo(HaveOccurred())
 
 	postgresPath, err := exec.LookPath("postgres")
 	Expect(err).NotTo(HaveOccurred())
 
-	initdb := initdbPath + " -U postgres -D " + tmpdir + " -E UTF8 --no-local"
-	postgres := fmt.Sprintf("%s -D %s -h 127.0.0.1 -p %d", postgresPath, tmpdir, runner.Port)
+	initCmd := exec.Command(initdbPath, "-U", "postgres", "-D", tmpdir, "-E", "UTF8", "--no-local")
+	startCmd := exec.Command(postgresPath, "-D", tmpdir, "-h", "127.0.0.1", "-p", strconv.Itoa(runner.Port))
 
 	if currentUser.Uid == "0" {
 		pgUser, err := user.Lookup("postgres")
 		Expect(err).NotTo(HaveOccurred())
 
-		uid, err := strconv.Atoi(pgUser.Uid)
+		var uid, gid uint32
+		_, err = fmt.Sscanf(pgUser.Uid, "%d", &uid)
 		Expect(err).NotTo(HaveOccurred())
 
-		gid, err := strconv.Atoi(pgUser.Gid)
+		_, err = fmt.Sscanf(pgUser.Gid, "%d", &gid)
 		Expect(err).NotTo(HaveOccurred())
 
-		err = os.Chown(tmpdir, uid, gid)
+		err = os.Chown(tmpdir, int(uid), int(gid))
 		Expect(err).NotTo(HaveOccurred())
 
-		initCmd = exec.Command("su", "postgres", "-c", initdb)
-		startCmd = exec.Command("su", "postgres", "-c", postgres)
-	} else {
-		initCmd = exec.Command("bash", "-c", initdb)
-		startCmd = exec.Command("bash", "-c", postgres)
+		credential := &syscall.Credential{Uid: uid, Gid: gid}
+
+		initCmd.SysProcAttr = &syscall.SysProcAttr{}
+		initCmd.SysProcAttr.Credential = credential
+
+		startCmd.SysProcAttr = &syscall.SysProcAttr{}
+		startCmd.SysProcAttr.Credential = credential
 	}
 
 	session, err := gexec.Start(
@@ -92,25 +96,47 @@ func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error 
 	return ginkgoRunner.Run(signals, ready)
 }
 
-func (runner *Runner) Open() *sql.DB {
+func (runner *Runner) OpenDB() *sql.DB {
 	dbConn, err := migration.Open(
 		"postgres",
 		runner.DataSourceName(),
-		migrations.Migrations,
+		migrations.New(db.NewNoEncryption()),
 	)
 	Expect(err).NotTo(HaveOccurred())
 
+	// only allow one connection so that we can detect any code paths that
+	// require more than one, which will deadlock if it's at the limit
 	dbConn.SetMaxOpenConns(1)
 
 	return dbConn
 }
 
-func (runner *Runner) OpenPgx() *pgx.Conn {
-	config, err := pgx.ParseDSN(runner.DataSourceName())
+func (runner *Runner) OpenConn() db.Conn {
+	dbConn, err := db.Open(
+		lagertest.NewTestLogger("postgres-runner"),
+		"postgres",
+		runner.DataSourceName(),
+		nil,
+		nil,
+	)
 	Expect(err).NotTo(HaveOccurred())
 
-	dbConn, err := pgx.Connect(config)
+	// only allow one connection so that we can detect any code paths that
+	// require more than one, which will deadlock if it's at the limit
+	dbConn.SetMaxOpenConns(1)
+
+	return dbConn
+}
+
+func (runner *Runner) OpenSingleton() *sql.DB {
+	dbConn, err := sql.Open("postgres", runner.DataSourceName())
 	Expect(err).NotTo(HaveOccurred())
+
+	// only allow one connection, period. this matches production code use case,
+	// as this is used for advisory locks.
+	dbConn.SetMaxIdleConns(1)
+	dbConn.SetMaxOpenConns(1)
+	dbConn.SetConnMaxLifetime(0)
 
 	return dbConn
 }

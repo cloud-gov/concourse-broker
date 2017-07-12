@@ -4,11 +4,10 @@ import (
 	"errors"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/config"
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/db/algorithm"
+	"github.com/concourse/atc/db/dbfakes"
 	"github.com/concourse/atc/scheduler/inputmapper/inputconfig"
-	"github.com/concourse/atc/scheduler/inputmapper/inputconfig/inputconfigfakes"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -16,19 +15,19 @@ import (
 
 var _ = Describe("Transformer", func() {
 	var (
-		fakeDB      *inputconfigfakes.FakeTransformerDB
-		transformer inputconfig.Transformer
+		fakePipeline *dbfakes.FakePipeline
+		transformer  inputconfig.Transformer
 	)
 
 	BeforeEach(func() {
-		fakeDB = new(inputconfigfakes.FakeTransformerDB)
-		transformer = inputconfig.NewTransformer(fakeDB)
+		fakePipeline = new(dbfakes.FakePipeline)
+		transformer = inputconfig.NewTransformer(fakePipeline)
 	})
 
 	Describe("TransformInputConfigs", func() {
 		Context("when the job name exists in the versionsDB", func() {
 			var (
-				jobInputs       []config.JobInput
+				jobInputs       []atc.JobInput
 				algorithmInputs algorithm.InputConfigs
 				tranformErr     error
 			)
@@ -46,7 +45,7 @@ var _ = Describe("Transformer", func() {
 
 			Context("when an input has nil version", func() {
 				BeforeEach(func() {
-					jobInputs = []config.JobInput{{
+					jobInputs = []atc.JobInput{{
 						Name:     "job-input-1",
 						Resource: "r1",
 						Version:  nil,
@@ -67,7 +66,7 @@ var _ = Describe("Transformer", func() {
 
 			Context("when an input has passed constraints", func() {
 				BeforeEach(func() {
-					jobInputs = []config.JobInput{{
+					jobInputs = []atc.JobInput{{
 						Name:     "job-input-1",
 						Resource: "r1",
 						Version:  &atc.VersionConfig{Latest: true},
@@ -89,7 +88,7 @@ var _ = Describe("Transformer", func() {
 
 			Context("when an input has version: every", func() {
 				BeforeEach(func() {
-					jobInputs = []config.JobInput{{
+					jobInputs = []atc.JobInput{{
 						Name:     "job-input-1",
 						Resource: "r1",
 						Version:  &atc.VersionConfig{Every: true, Latest: true}, // spice things up a bit
@@ -110,7 +109,7 @@ var _ = Describe("Transformer", func() {
 
 			Context("when an input has a pinned version", func() {
 				BeforeEach(func() {
-					jobInputs = []config.JobInput{
+					jobInputs = []atc.JobInput{
 						{
 							Name:     "job-input-1",
 							Resource: "r1",
@@ -129,7 +128,7 @@ var _ = Describe("Transformer", func() {
 
 					BeforeEach(func() {
 						disaster = errors.New("bad thing")
-						fakeDB.GetVersionedResourceByVersionReturns(db.SavedVersionedResource{}, false, disaster)
+						fakePipeline.GetVersionedResourceByVersionReturns(db.SavedVersionedResource{}, false, disaster)
 					})
 
 					It("returns the error", func() {
@@ -137,8 +136,8 @@ var _ = Describe("Transformer", func() {
 					})
 
 					It("looked up the version id with the right resource and version", func() {
-						Expect(fakeDB.GetVersionedResourceByVersionCallCount()).To(Equal(1))
-						actualVersion, actualResource := fakeDB.GetVersionedResourceByVersionArgsForCall(0)
+						Expect(fakePipeline.GetVersionedResourceByVersionCallCount()).To(Equal(1))
+						actualVersion, actualResource := fakePipeline.GetVersionedResourceByVersionArgsForCall(0)
 						Expect(actualVersion).To(Equal(atc.Version{"version": "v1"}))
 						Expect(actualResource).To(Equal("r1"))
 					})
@@ -146,7 +145,7 @@ var _ = Describe("Transformer", func() {
 
 				Context("when the pinned version is not found", func() {
 					BeforeEach(func() {
-						fakeDB.GetVersionedResourceByVersionReturns(db.SavedVersionedResource{}, false, nil)
+						fakePipeline.GetVersionedResourceByVersionReturns(db.SavedVersionedResource{}, false, nil)
 					})
 
 					It("omits the entire input", func() {
@@ -163,7 +162,7 @@ var _ = Describe("Transformer", func() {
 
 				Context("when the pinned version is found", func() {
 					BeforeEach(func() {
-						fakeDB.GetVersionedResourceByVersionReturns(db.SavedVersionedResource{ID: 99}, true, nil)
+						fakePipeline.GetVersionedResourceByVersionReturns(db.SavedVersionedResource{ID: 99}, true, nil)
 					})
 
 					It("sets the pinned version ID", func() {
@@ -195,7 +194,7 @@ var _ = Describe("Transformer", func() {
 				algorithmInputs, transformErr := transformer.TransformInputConfigs(
 					&algorithm.VersionsDB{},
 					"no",
-					[]config.JobInput{{
+					[]atc.JobInput{{
 						Name:     "job-input-1",
 						Resource: "nah",
 						Version:  &atc.VersionConfig{},

@@ -2,9 +2,8 @@ package engine
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
-	"time"
+	"strconv"
+	"strings"
 
 	"os"
 
@@ -21,27 +20,24 @@ type execMetadata struct {
 }
 
 const execEngineName = "exec.v2"
-const successTTL = 5 * time.Minute
-const failureTTL = 5 * time.Minute
 
 type execEngine struct {
 	factory         exec.Factory
 	delegateFactory BuildDelegateFactory
-	teamDBFactory   db.TeamDBFactory
 	externalURL     string
+	releaseCh       chan struct{}
 }
 
 func NewExecEngine(
 	factory exec.Factory,
 	delegateFactory BuildDelegateFactory,
-	teamDBFactory db.TeamDBFactory,
 	externalURL string,
 ) Engine {
 	return &execEngine{
 		factory:         factory,
 		delegateFactory: delegateFactory,
-		teamDBFactory:   teamDBFactory,
 		externalURL:     externalURL,
+		releaseCh:       make(chan struct{}),
 	}
 }
 
@@ -51,9 +47,8 @@ func (engine *execEngine) Name() string {
 
 func (engine *execEngine) CreateBuild(logger lager.Logger, build db.Build, plan atc.Plan) (Build, error) {
 	return &execBuild{
-		buildID:      build.ID(),
-		teamName:     build.TeamName(),
-		teamID:       build.TeamID(),
+		dbBuild: build,
+
 		stepMetadata: buildMetadata(build, engine.externalURL),
 
 		factory:  engine.factory,
@@ -62,10 +57,8 @@ func (engine *execEngine) CreateBuild(logger lager.Logger, build db.Build, plan 
 			Plan: plan,
 		},
 
-		signals: make(chan os.Signal, 1),
-
-		containerSuccessTTL: successTTL,
-		containerFailureTTL: failureTTL,
+		releaseCh: engine.releaseCh,
+		signals:   make(chan os.Signal, 1),
 	}, nil
 }
 
@@ -77,75 +70,23 @@ func (engine *execEngine) LookupBuild(logger lager.Logger, build db.Build) (Buil
 		return nil, err
 	}
 
-	err = atc.NewPlanTraversal(engine.convertPipelineNameToID(build.TeamName())).Traverse(&metadata.Plan)
-	if err != nil {
-		return nil, err
-	}
-
 	return &execBuild{
-		buildID:      build.ID(),
-		teamName:     build.TeamName(),
-		teamID:       build.TeamID(),
+		dbBuild: build,
+
 		stepMetadata: buildMetadata(build, engine.externalURL),
 
 		factory:  engine.factory,
 		delegate: engine.delegateFactory.Delegate(build),
 		metadata: metadata,
 
-		signals: make(chan os.Signal, 1),
-
-		containerSuccessTTL: successTTL,
-		containerFailureTTL: failureTTL,
+		releaseCh: engine.releaseCh,
+		signals:   make(chan os.Signal, 1),
 	}, nil
 }
 
-func (engine *execEngine) convertPipelineNameToID(teamName string) func(plan *atc.Plan) error {
-	teamDB := engine.teamDBFactory.GetTeamDB(teamName)
-	return func(plan *atc.Plan) error {
-		var pipelineName *string
-		var pipelineID *int
-
-		switch {
-		case plan.Get != nil:
-			pipelineName = &plan.Get.Pipeline
-			pipelineID = &plan.Get.PipelineID
-		case plan.Put != nil:
-			pipelineName = &plan.Put.Pipeline
-			pipelineID = &plan.Put.PipelineID
-		case plan.Task != nil:
-			pipelineName = &plan.Task.Pipeline
-			pipelineID = &plan.Task.PipelineID
-		case plan.DependentGet != nil:
-			pipelineName = &plan.DependentGet.Pipeline
-			pipelineID = &plan.DependentGet.PipelineID
-		}
-
-		if pipelineName != nil && *pipelineName != "" {
-			if *pipelineID != 0 {
-				return fmt.Errorf(
-					"build plan with ID %s has both pipeline name (%s) and ID (%d)",
-					plan.ID,
-					*pipelineName,
-					*pipelineID,
-				)
-			}
-
-			savedPipeline, found, err := teamDB.GetPipelineByName(*pipelineName)
-
-			if err != nil {
-				return err
-			}
-
-			if !found {
-				return errors.New("pipeline not found: " + *pipelineName)
-			}
-
-			*pipelineID = savedPipeline.ID
-			*pipelineName = ""
-		}
-
-		return nil
-	}
+func (engine *execEngine) ReleaseAll(logger lager.Logger) {
+	logger.Info("calling-release-in-exec-engine")
+	close(engine.releaseCh)
 }
 
 func buildMetadata(build db.Build, externalURL string) StepMetadata {
@@ -160,20 +101,16 @@ func buildMetadata(build db.Build, externalURL string) StepMetadata {
 }
 
 type execBuild struct {
-	buildID      int
+	dbBuild      db.Build
 	stepMetadata StepMetadata
-	teamName     string
-	teamID       int
 
 	factory  exec.Factory
 	delegate BuildDelegate
 
-	signals chan os.Signal
+	signals   chan os.Signal
+	releaseCh chan struct{}
 
 	metadata execMetadata
-
-	containerSuccessTTL time.Duration
-	containerFailureTTL time.Duration
 }
 
 func (build *execBuild) Metadata() string {
@@ -185,13 +122,6 @@ func (build *execBuild) Metadata() string {
 	return string(payload)
 }
 
-func (build *execBuild) PublicPlan(lager.Logger) (atc.PublicBuildPlan, error) {
-	return atc.PublicBuildPlan{
-		Schema: execEngineName,
-		Plan:   build.metadata.Plan.Public(),
-	}, nil
-}
-
 func (build *execBuild) Abort(lager.Logger) error {
 	build.signals <- os.Kill
 	return nil
@@ -199,28 +129,26 @@ func (build *execBuild) Abort(lager.Logger) error {
 
 func (build *execBuild) Resume(logger lager.Logger) {
 	stepFactory := build.buildStepFactory(logger, build.metadata.Plan)
-	source := stepFactory.Using(&exec.NoopStep{}, exec.NewSourceRepository())
-
-	defer source.Release()
+	source := stepFactory.Using(worker.NewArtifactRepository())
 
 	process := ifrit.Background(source)
 
 	exited := process.Wait()
 
 	aborted := false
-	var succeeded exec.Success
+	var succeeded bool
 
 	for {
 		select {
+		case <-build.releaseCh:
+			logger.Info("releasing")
+			return
 		case err := <-exited:
-			if aborted {
-				succeeded = false
-			} else if !source.Result(&succeeded) {
-				logger.Error("step-had-no-result", errors.New("step failed to provide us with a result"))
-				succeeded = false
+			if !aborted {
+				succeeded = source.Succeeded()
 			}
 
-			build.delegate.Finish(logger.Session("finish"), err, succeeded, aborted)
+			build.delegate.Finish(logger.Session("finish"), err, exec.Success(succeeded), aborted)
 			return
 
 		case sig := <-build.signals:
@@ -274,10 +202,6 @@ func (build *execBuild) buildStepFactory(logger lager.Logger, plan atc.Plan) exe
 		return build.buildPutStep(logger, plan)
 	}
 
-	if plan.DependentGet != nil {
-		return build.buildDependentGetStep(logger, plan)
-	}
-
 	if plan.Retry != nil {
 		return build.buildRetryStep(logger, plan)
 	}
@@ -285,28 +209,28 @@ func (build *execBuild) buildStepFactory(logger lager.Logger, plan atc.Plan) exe
 	return exec.Identity{}
 }
 
-func (build *execBuild) stepIdentifier(
-	logger lager.Logger,
+func (build *execBuild) containerMetadata(
+	containerType db.ContainerType,
 	stepName string,
-	planID atc.PlanID,
-	pipelineID int,
 	attempts []int,
-	typ string,
-) (worker.Identifier, worker.Metadata) {
-	stepType, err := db.ContainerTypeFromString(typ)
-	if err != nil {
-		logger.Debug(fmt.Sprintf("Invalid step type: %s", typ))
+) db.ContainerMetadata {
+	attemptStrs := []string{}
+	for _, a := range attempts {
+		attemptStrs = append(attemptStrs, strconv.Itoa(a))
 	}
 
-	return worker.Identifier{
-			BuildID: build.buildID,
-			PlanID:  planID,
-		},
-		worker.Metadata{
-			StepName:   stepName,
-			Type:       stepType,
-			PipelineID: pipelineID,
-			TeamID:     build.teamID,
-			Attempts:   attempts,
-		}
+	return db.ContainerMetadata{
+		Type: containerType,
+
+		PipelineID: build.dbBuild.PipelineID(),
+		JobID:      build.dbBuild.JobID(),
+		BuildID:    build.dbBuild.ID(),
+
+		PipelineName: build.dbBuild.PipelineName(),
+		JobName:      build.dbBuild.JobName(),
+		BuildName:    build.dbBuild.Name(),
+
+		StepName: stepName,
+		Attempt:  strings.Join(attemptStrs, "."),
+	}
 }

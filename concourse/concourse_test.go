@@ -1,14 +1,18 @@
 package concourse
 
 import (
+	"encoding/json"
+	"net/http"
+
 	"code.cloudfoundry.org/lager"
 	"github.com/18F/concourse-broker/cf"
 	"github.com/18F/concourse-broker/config"
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/auth/uaa"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/ghttp"
-	"net/http"
 )
 
 var _ = Describe("Concourse", func() {
@@ -25,6 +29,92 @@ var _ = Describe("Concourse", func() {
 			})
 		})
 	})
+	Describe("UpdateTeams", func() {
+		var expectedURL = "/api/v1/teams/team venture"
+		var expectedTeam, desiredTeam atc.Team
+		var expectedTeams []atc.Team
+		var expectedAuthToken = atc.AuthToken{
+			Type:  "Bearer",
+			Value: "gobbeldigook",
+		}
+		BeforeEach(func() {
+			env.ClientID = "new-id"
+			env.ClientSecret = "new-secret"
+
+			outdatedAuth := uaa.UAAAuthConfig{
+				ClientID:     "original-id",
+				ClientSecret: "original-secret",
+				CFSpaces:     []string{""},
+			}
+			outdatedAuthData, err := json.Marshal(outdatedAuth)
+			Expect(err).NotTo(HaveOccurred())
+
+			currentAuth := uaa.UAAAuthConfig{
+				ClientID:     "new-id",
+				ClientSecret: "new-secret",
+				CFSpaces:     []string{""},
+			}
+			currentAuthData, err := json.Marshal(currentAuth)
+			Expect(err).NotTo(HaveOccurred())
+
+			desiredTeam = atc.Team{
+				ID:   1,
+				Name: "team venture",
+				Auth: map[string]*json.RawMessage{
+					uaa.ProviderName: (*json.RawMessage)(&currentAuthData),
+				},
+			}
+			expectedTeams = []atc.Team{
+				{
+					ID:   1,
+					Name: "team venture",
+					Auth: map[string]*json.RawMessage{
+						uaa.ProviderName: (*json.RawMessage)(&outdatedAuthData),
+					},
+				},
+				{
+					ID:   2,
+					Name: "team rocket",
+					Auth: map[string]*json.RawMessage{
+						uaa.ProviderName: (*json.RawMessage)(&currentAuthData),
+					},
+				},
+			}
+			expectedTeam = atc.Team{
+				ID:   1,
+				Name: "team venture",
+			}
+		})
+		Context("when i update teams", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/teams/main/auth/token"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, expectedAuthToken),
+					),
+				)
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("GET", "/api/v1/teams"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, expectedTeams),
+					),
+				)
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.VerifyJSONRepresenting(desiredTeam),
+						ghttp.RespondWithJSONEncoded(http.StatusCreated, expectedTeam),
+					),
+				)
+			})
+			It("updates team uaa credentials", func() {
+				client := NewClient(env, logger)
+				err := client.UpdateTeams()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(atcServer.ReceivedRequests()).To(HaveLen(3))
+			})
+		})
+	})
 	Describe("CreateTeam", func() {
 		var expectedURL = "/api/v1/teams/team venture"
 		var authMethodURL = "/api/v1/teams/team venture/auth/methods"
@@ -35,9 +125,13 @@ var _ = Describe("Concourse", func() {
 		}
 
 		BeforeEach(func() {
+			auth := uaa.UAAAuthConfig{CFSpaces: []string{""}}
+			authData, err := json.Marshal(auth)
+			Expect(err).NotTo(HaveOccurred())
+
 			desiredTeam = atc.Team{
-				UAAAuth: &atc.UAAAuth{
-					CFSpaces: []string{""},
+				Auth: map[string]*json.RawMessage{
+					uaa.ProviderName: (*json.RawMessage)(&authData),
 				},
 			}
 			expectedTeam = atc.Team{
@@ -156,7 +250,6 @@ var _ = Describe("Concourse", func() {
 				Expect(logs[0].Message).To(ContainSubstring("concourse-client.create-team.auth-client-error"))
 			})
 		})
-
 	})
 	Describe("DeleteTeam", func() {
 		var expectedURL = "/api/v1/teams/team venture"
@@ -233,6 +326,5 @@ var _ = Describe("Concourse", func() {
 				Expect(logs[0].Message).To(ContainSubstring("concourse-client.delete-team.auth-client-error"))
 			})
 		})
-
 	})
 })

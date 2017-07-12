@@ -12,16 +12,26 @@ import (
 func (s *Server) ListPipelines(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("list-pipelines")
 	requestTeamName := r.FormValue(":team_name")
-	teamDB := s.teamDBFactory.GetTeamDB(requestTeamName)
+	team, found, err := s.teamFactory.FindTeam(requestTeamName)
+	if err != nil {
+		logger.Error("failed-to-get-team", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	var pipelines []db.SavedPipeline
-	var err error
+	if !found {
+		logger.Info("team-not-found")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	var pipelines []db.Pipeline
 
 	authTeam, authTeamFound := auth.GetTeam(r)
 	if authTeamFound && authTeam.IsAuthorized(requestTeamName) {
-		pipelines, err = teamDB.GetPipelines()
+		pipelines, err = team.Pipelines()
 	} else {
-		pipelines, err = teamDB.GetPublicPipelines()
+		pipelines, err = team.PublicPipelines()
 	}
 
 	if err != nil {

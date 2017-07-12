@@ -16,29 +16,26 @@ import (
 
 var _ = Describe("CheckPipelineAccessHandler", func() {
 	var (
-		response      *http.Response
-		server        *httptest.Server
-		delegate      *pipelineDelegateHandler
-		teamDBFactory *dbfakes.FakeTeamDBFactory
-		teamDB        *dbfakes.FakeTeamDB
-		pipelineDB    *dbfakes.FakePipelineDB
-		handler       http.Handler
+		response    *http.Response
+		server      *httptest.Server
+		delegate    *pipelineDelegateHandler
+		teamFactory *dbfakes.FakeTeamFactory
+		team        *dbfakes.FakeTeam
+		pipeline    *dbfakes.FakePipeline
+		handler     http.Handler
 
 		authValidator     *authfakes.FakeValidator
 		userContextReader *authfakes.FakeUserContextReader
 	)
 
 	BeforeEach(func() {
-		teamDBFactory = new(dbfakes.FakeTeamDBFactory)
-		teamDB = new(dbfakes.FakeTeamDB)
-		teamDBFactory.GetTeamDBReturns(teamDB)
+		teamFactory = new(dbfakes.FakeTeamFactory)
+		team = new(dbfakes.FakeTeam)
+		teamFactory.FindTeamReturns(team, true, nil)
 
-		pipelineDB = new(dbfakes.FakePipelineDB)
+		pipeline = new(dbfakes.FakePipeline)
 
-		pipelineDBFactory := new(dbfakes.FakePipelineDBFactory)
-		pipelineDBFactory.BuildReturns(pipelineDB)
-
-		handlerFactory := auth.NewCheckPipelineAccessHandlerFactory(pipelineDBFactory, teamDBFactory)
+		handlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 
 		authValidator = new(authfakes.FakeValidator)
 		userContextReader = new(authfakes.FakeUserContextReader)
@@ -64,17 +61,18 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when pipeline exists", func() {
 		BeforeEach(func() {
-			teamDB.GetPipelineByNameReturns(db.SavedPipeline{Pipeline: db.Pipeline{Name: "some-pipeline"}}, true, nil)
+			pipeline.NameReturns("some-pipeline")
+			team.PipelineReturns(pipeline, true, nil)
 		})
 
 		Context("when pipeline is public", func() {
 			BeforeEach(func() {
-				pipelineDB.IsPublicReturns(true)
+				pipeline.PublicReturns(true)
 			})
 
 			It("calls pipelineScopedHandler with pipelineDB in context", func() {
 				Expect(delegate.IsCalled).To(BeTrue())
-				Expect(delegate.ContextPipelineDB).To(BeIdenticalTo(pipelineDB))
+				Expect(delegate.ContextPipelineDB).To(BeIdenticalTo(pipeline))
 			})
 
 			It("returns 200 OK", func() {
@@ -91,7 +89,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 				It("calls pipelineScopedHandler with pipelineDB in context", func() {
 					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(delegate.ContextPipelineDB).To(BeIdenticalTo(pipelineDB))
+					Expect(delegate.ContextPipelineDB).To(BeIdenticalTo(pipeline))
 				})
 
 				It("returns 200 OK", func() {
@@ -129,7 +127,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when pipeline does not exist", func() {
 		BeforeEach(func() {
-			teamDB.GetPipelineByNameReturns(db.SavedPipeline{}, false, nil)
+			team.PipelineReturns(nil, false, nil)
 		})
 
 		It("returns 404", func() {
@@ -143,7 +141,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 	Context("when getting pipeline fails", func() {
 		BeforeEach(func() {
-			teamDB.GetPipelineByNameReturns(db.SavedPipeline{}, false, errors.New("disaster"))
+			team.PipelineReturns(nil, false, errors.New("disaster"))
 		})
 
 		It("returns 500", func() {
@@ -158,10 +156,10 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 
 type pipelineDelegateHandler struct {
 	IsCalled          bool
-	ContextPipelineDB db.PipelineDB
+	ContextPipelineDB db.Pipeline
 }
 
 func (handler *pipelineDelegateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler.IsCalled = true
-	handler.ContextPipelineDB = r.Context().Value(auth.PipelineDBKey).(db.PipelineDB)
+	handler.ContextPipelineDB = r.Context().Value(auth.PipelineContextKey).(db.Pipeline)
 }

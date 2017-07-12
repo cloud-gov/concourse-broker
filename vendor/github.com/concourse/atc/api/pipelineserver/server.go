@@ -4,24 +4,28 @@ import (
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/auth"
 	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/engine"
 )
 
 type Server struct {
-	logger        lager.Logger
-	teamDBFactory db.TeamDBFactory
-	rejector      auth.Rejector
-	pipelinesDB   db.PipelinesDB
+	logger          lager.Logger
+	teamFactory     db.TeamFactory
+	rejector        auth.Rejector
+	pipelineFactory db.PipelineFactory
+	engine          engine.Engine
 }
 
 func NewServer(
 	logger lager.Logger,
-	teamDBFactory db.TeamDBFactory,
-	pipelinesDB db.PipelinesDB,
+	teamFactory db.TeamFactory,
+	pipelineFactory db.PipelineFactory,
+	engine engine.Engine,
 ) *Server {
 	return &Server{
-		logger:        logger,
-		teamDBFactory: teamDBFactory,
-		rejector:      auth.UnauthorizedRejector{},
-		pipelinesDB:   pipelinesDB,
+		logger:          logger,
+		teamFactory:     teamFactory,
+		rejector:        auth.UnauthorizedRejector{},
+		pipelineFactory: pipelineFactory,
+		engine:          engine,
 	}
 }

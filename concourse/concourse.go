@@ -1,13 +1,17 @@
 package concourse
 
 import (
-	"code.cloudfoundry.org/lager"
+	"encoding/json"
 	"errors"
 	"fmt"
+
+	"code.cloudfoundry.org/lager"
 	"github.com/18F/concourse-broker/cf"
 	"github.com/18F/concourse-broker/config"
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/auth/uaa"
 	"github.com/concourse/go-concourse/concourse"
+	"github.com/hashicorp/go-multierror"
 )
 
 const adminTeam = "main"
@@ -16,6 +20,7 @@ const adminTeam = "main"
 type Client interface {
 	CreateTeam(details cf.Details) error
 	DeleteTeam(details cf.Details) error
+	UpdateTeams() error
 }
 
 // NewClient returns a client that can be used to interface with a deployed Concourse CI instance.
@@ -25,7 +30,8 @@ func NewClient(env config.Env, logger lager.Logger) Client {
 	return &concourseClient{
 		client: concourse.NewClient(env.ConcourseURL, httpClient),
 		env:    env,
-		logger: logger.Session("concourse-client")}
+		logger: logger.Session("concourse-client"),
+	}
 }
 
 type concourseClient struct {
@@ -50,15 +56,23 @@ func (c *concourseClient) getTeamName(details cf.Details) string {
 
 func (c *concourseClient) CreateTeam(details cf.Details) error {
 	teamName := c.getTeamName(details)
+	auth := uaa.UAAAuthConfig{
+		ClientID:     c.env.ClientID,
+		ClientSecret: c.env.ClientSecret,
+		CFURL:        c.env.CFURL,
+		AuthURL:      c.env.AuthURL,
+		TokenURL:     c.env.TokenURL,
+		CFSpaces:     []string{details.SpaceGUID},
+		CFCACert:     "",
+	}
+	authData, err := json.Marshal(auth)
+	if err != nil {
+		c.logger.Error("create-team.marshal-error", err)
+		return err
+	}
 	team := atc.Team{
-		UAAAuth: &atc.UAAAuth{
-			ClientID:     c.env.ClientID,
-			ClientSecret: c.env.ClientSecret,
-			AuthURL:      c.env.AuthURL,
-			TokenURL:     c.env.TokenURL,
-			CFSpaces:     []string{details.SpaceGUID},
-			CFCACert:     "",
-			CFURL:        c.env.CFURL,
+		Auth: map[string]*json.RawMessage{
+			uaa.ProviderName: (*json.RawMessage)(&authData),
 		},
 	}
 	client, err := c.getAuthClient(c.env.ConcourseURL)
@@ -111,4 +125,57 @@ func (c *concourseClient) DeleteTeam(details cf.Details) error {
 		return err
 	}
 	return nil
+}
+
+func (c *concourseClient) UpdateTeams() error {
+	client, err := c.getAuthClient(c.env.ConcourseURL)
+	if err != nil {
+		c.logger.Error("update-teams.auth-client-error", err)
+		return err
+	}
+
+	teams, err := client.ListTeams()
+	if err != nil {
+		c.logger.Error("update-teams.list-error", err)
+		return err
+	}
+
+	errc := make(chan error)
+	for _, team := range teams {
+		go func(team atc.Team) {
+			auth := &uaa.UAAAuthConfig{}
+			if err := json.Unmarshal(*team.Auth[uaa.ProviderName], &auth); err != nil {
+				errc <- err
+				return
+			}
+
+			if auth.ClientID == c.env.ClientID && auth.ClientSecret == c.env.ClientSecret {
+				errc <- nil
+				return
+			}
+
+			auth.ClientID = c.env.ClientID
+			auth.ClientSecret = c.env.ClientSecret
+
+			authData, err := json.Marshal(auth)
+			if err != nil {
+				c.logger.Error("update-teams.marshal-error", err)
+				errc <- err
+				return
+			}
+			team.Auth[uaa.ProviderName] = (*json.RawMessage)(&authData)
+
+			_, _, _, err = client.Team(team.Name).CreateOrUpdate(team)
+			errc <- err
+		}(team)
+	}
+
+	var result error
+	for _ = range teams {
+		if err := <-errc; err != nil {
+			multierror.Append(result, err)
+		}
+	}
+
+	return result
 }

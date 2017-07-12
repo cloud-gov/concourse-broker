@@ -5,8 +5,12 @@ import (
 
 	"code.cloudfoundry.org/lager"
 	"code.cloudfoundry.org/lager/lagertest"
+	"github.com/cloudfoundry/bosh-cli/director/template"
 	"github.com/concourse/atc"
-	. "github.com/concourse/atc/resource"
+	"github.com/concourse/atc/creds"
+	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/dbfakes"
+	"github.com/concourse/atc/resource"
 	"github.com/concourse/atc/resource/resourcefakes"
 	"github.com/concourse/atc/worker"
 	"github.com/concourse/atc/worker/workerfakes"
@@ -17,135 +21,116 @@ import (
 
 var _ = Describe("FetchSourceProvider", func() {
 	var (
-		fakeWorkerClient     *workerfakes.FakeClient
-		fakeContainerCreator *resourcefakes.FakeFetchContainerCreator
-		fetchSourceProvider  FetchSourceProvider
+		fakeWorkerClient          *workerfakes.FakeClient
+		fetchSourceProvider       resource.FetchSourceProvider
+		fakeImageFetchingDelegate *workerfakes.FakeImageFetchingDelegate
 
-		logger          lager.Logger
-		resourceOptions *resourcefakes.FakeResourceOptions
-		cacheID         *resourcefakes.FakeCacheIdentifier
-		tags            atc.Tags
-		resourceTypes   atc.ResourceTypes
-		teamID          = 3
+		logger                   lager.Logger
+		resourceInstance         *resourcefakes.FakeResourceInstance
+		metadata                 = resource.EmptyMetadata{}
+		session                  = resource.Session{}
+		tags                     atc.Tags
+		resourceTypes            creds.VersionedResourceTypes
+		teamID                   = 3
+		resourceCache            *db.UsedResourceCache
+		fakeResourceCacheFactory *dbfakes.FakeResourceCacheFactory
 	)
 
 	BeforeEach(func() {
 		fakeWorkerClient = new(workerfakes.FakeClient)
-		fetchSourceProviderFactory := NewFetchSourceProviderFactory(fakeWorkerClient)
+		fakeResourceCacheFactory = new(dbfakes.FakeResourceCacheFactory)
+		fetchSourceProviderFactory := resource.NewFetchSourceProviderFactory(fakeWorkerClient, fakeResourceCacheFactory)
 		logger = lagertest.NewTestLogger("test")
-		session := Session{}
-		cacheID = new(resourcefakes.FakeCacheIdentifier)
+		resourceInstance = new(resourcefakes.FakeResourceInstance)
 		tags = atc.Tags{"some", "tags"}
-		resourceTypes = atc.ResourceTypes{
-			{
-				Name: "some-resource-type",
-			},
+
+		variables := template.StaticVariables{
+			"secret-repository": "repository",
 		}
-		resourceOptions = new(resourcefakes.FakeResourceOptions)
-		resourceOptions.ResourceTypeReturns("some-resource-type")
-		fakeContainerCreator = new(resourcefakes.FakeFetchContainerCreator)
+
+		resourceTypes = creds.NewVersionedResourceTypes(variables, atc.VersionedResourceTypes{
+			{
+				ResourceType: atc.ResourceType{
+					Name:   "some-resource",
+					Type:   "some-resource",
+					Source: atc.Source{"some": "((secret-source))"},
+				},
+				Version: atc.Version{"some": "version"},
+			},
+		})
+
+		resourceInstance.ResourceTypeReturns("some-resource-type")
+		fakeImageFetchingDelegate = new(workerfakes.FakeImageFetchingDelegate)
+		resourceCache = &db.UsedResourceCache{ID: 42}
+		fakeResourceCacheFactory.FindOrCreateResourceCacheReturns(resourceCache, nil)
 
 		fetchSourceProvider = fetchSourceProviderFactory.NewFetchSourceProvider(
 			logger,
 			session,
+			metadata,
 			tags,
 			teamID,
 			resourceTypes,
-			cacheID,
-			resourceOptions,
-			fakeContainerCreator,
+			resourceInstance,
+			fakeImageFetchingDelegate,
 		)
 	})
 
 	Describe("Get", func() {
-		Context("when container for session exists", func() {
-			var fakeContainer *workerfakes.FakeContainer
+		It("tries to find satisfying worker", func() {
+			_, err := fetchSourceProvider.Get()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeWorkerClient.SatisfyingCallCount()).To(Equal(1))
+			_, resourceSpec, actualResourceTypes := fakeWorkerClient.SatisfyingArgsForCall(0)
+			Expect(resourceSpec).To(Equal(worker.WorkerSpec{
+				ResourceType: "some-resource-type",
+				Tags:         tags,
+				TeamID:       teamID,
+			}))
+			Expect(actualResourceTypes).To(Equal(resourceTypes))
+		})
+
+		Context("when worker is found for resource types", func() {
+			var fakeWorker *workerfakes.FakeWorker
 
 			BeforeEach(func() {
-				fakeContainer = new(workerfakes.FakeContainer)
-				fakeWorkerClient.FindContainerForIdentifierReturns(fakeContainer, true, nil)
+				fakeWorker = new(workerfakes.FakeWorker)
+				fakeWorkerClient.SatisfyingReturns(fakeWorker, nil)
 			})
 
-			It("returns container based source", func() {
+			It("returns resource instance source", func() {
 				source, err := fetchSourceProvider.Get()
 				Expect(err).NotTo(HaveOccurred())
 
-				expectedSource := NewContainerFetchSource(logger, fakeContainer, resourceOptions)
+				expectedSource := resource.NewResourceInstanceFetchSource(
+					logger,
+					resourceCache,
+					resourceInstance,
+					fakeWorker,
+					resourceTypes,
+					tags,
+					teamID,
+					session,
+					metadata,
+					fakeImageFetchingDelegate,
+					fakeResourceCacheFactory,
+				)
 				Expect(source).To(Equal(expectedSource))
 			})
 		})
 
-		Context("when container for session does not exist", func() {
+		Context("when worker is not found for resource types", func() {
+			var workerNotFoundErr error
+
 			BeforeEach(func() {
-				fakeWorkerClient.FindContainerForIdentifierReturns(nil, false, nil)
+				workerNotFoundErr = errors.New("not-found")
+				fakeWorkerClient.SatisfyingReturns(nil, workerNotFoundErr)
 			})
 
-			It("tries to find satisfying worker", func() {
+			It("returns an error", func() {
 				_, err := fetchSourceProvider.Get()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(fakeWorkerClient.SatisfyingCallCount()).To(Equal(1))
-				resourceSpec, actualResourceTypes := fakeWorkerClient.SatisfyingArgsForCall(0)
-				Expect(resourceSpec).To(Equal(worker.WorkerSpec{
-					ResourceType: "some-resource-type",
-					Tags:         tags,
-					TeamID:       teamID,
-				}))
-				Expect(actualResourceTypes).To(Equal(resourceTypes))
-			})
-
-			Context("when worker is found for resource types", func() {
-				var fakeWorker *workerfakes.FakeWorker
-
-				BeforeEach(func() {
-					fakeWorker = new(workerfakes.FakeWorker)
-					fakeWorkerClient.SatisfyingReturns(fakeWorker, nil)
-				})
-
-				Context("when volume is found on worker", func() {
-					var fakeVolume *workerfakes.FakeVolume
-
-					BeforeEach(func() {
-						fakeVolume = new(workerfakes.FakeVolume)
-						cacheID.FindOnReturns(fakeVolume, true, nil)
-					})
-
-					It("returns volume based source", func() {
-						source, err := fetchSourceProvider.Get()
-						Expect(err).NotTo(HaveOccurred())
-
-						expectedSource := NewVolumeFetchSource(logger, fakeVolume, fakeWorker, resourceOptions, fakeContainerCreator)
-						Expect(source).To(Equal(expectedSource))
-					})
-				})
-
-				Context("when volume is not found on worker", func() {
-					BeforeEach(func() {
-						cacheID.FindOnReturns(nil, false, nil)
-					})
-
-					It("returns empty source", func() {
-						source, err := fetchSourceProvider.Get()
-						Expect(err).NotTo(HaveOccurred())
-
-						expectedSource := NewEmptyFetchSource(logger, fakeWorker, cacheID, fakeContainerCreator, resourceOptions)
-						Expect(source).To(Equal(expectedSource))
-					})
-				})
-			})
-
-			Context("when worker is not found for resource types", func() {
-				var workerNotFoundErr error
-
-				BeforeEach(func() {
-					workerNotFoundErr = errors.New("not-found")
-					fakeWorkerClient.SatisfyingReturns(nil, workerNotFoundErr)
-				})
-
-				It("returns an error", func() {
-					_, err := fetchSourceProvider.Get()
-					Expect(err).To(HaveOccurred())
-					Expect(err).To(Equal(workerNotFoundErr))
-				})
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(Equal(workerNotFoundErr))
 			})
 		})
 	})

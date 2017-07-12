@@ -10,10 +10,11 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"strings"
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 	"github.com/mitchellh/mapstructure"
 	"github.com/tedsuo/rata"
 	"gopkg.in/yaml.v2"
@@ -50,22 +51,18 @@ type SaveConfigResponse struct {
 
 func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	session := s.logger.Session("set-config")
-	configVersionStr := r.Header.Get(atc.ConfigVersionHeader)
-	if len(configVersionStr) == 0 {
-		s.handleBadRequest(w, []string{"no config version specified"}, session)
-		return
-	}
 
-	var version dbng.ConfigVersion
-	_, err := fmt.Sscanf(configVersionStr, "%d", &version)
-	if err != nil {
-		session.Error("malformed-config-version", err)
-		s.handleBadRequest(w, []string{fmt.Sprintf("config version is malformed: %s", err)}, session)
-		return
+	var version db.ConfigVersion
+	if configVersionStr := r.Header.Get(atc.ConfigVersionHeader); len(configVersionStr) != 0 {
+		_, err := fmt.Sscanf(configVersionStr, "%d", &version)
+		if err != nil {
+			session.Error("malformed-config-version", err)
+			s.handleBadRequest(w, []string{fmt.Sprintf("config version is malformed: %s", err)}, session)
+			return
+		}
 	}
 
 	config, pausedState, err := saveConfigRequestUnmarshaler(r)
-
 	switch err {
 	case ErrStatusUnsupportedMediaType:
 		w.WriteHeader(http.StatusUnsupportedMediaType)
@@ -165,19 +162,19 @@ func (s *Server) writeSaveConfigResponse(w http.ResponseWriter, saveConfigRespon
 	w.Write(responseJSON)
 }
 
-func requestToConfig(contentType string, requestBody io.ReadCloser, configStructure interface{}) (dbng.PipelinePausedState, error) {
-	pausedState := dbng.PipelineNoChange
+func requestToConfig(contentType string, requestBody io.ReadCloser, configStructure interface{}) (db.PipelinePausedState, error) {
+	pausedState := db.PipelineNoChange
 
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return dbng.PipelineNoChange, ErrCannotParseContentType
+		return db.PipelineNoChange, ErrCannotParseContentType
 	}
 
 	switch mediaType {
 	case "application/json":
 		err := json.NewDecoder(requestBody).Decode(configStructure)
 		if err != nil {
-			return dbng.PipelineNoChange, ErrMalformedRequestPayload
+			return db.PipelineNoChange, ErrMalformedRequestPayload
 		}
 
 	case "application/x-yaml":
@@ -187,7 +184,7 @@ func requestToConfig(contentType string, requestBody io.ReadCloser, configStruct
 		}
 
 		if err != nil {
-			return dbng.PipelineNoChange, ErrMalformedRequestPayload
+			return db.PipelineNoChange, ErrMalformedRequestPayload
 		}
 
 	case "multipart/form-data":
@@ -201,42 +198,42 @@ func requestToConfig(contentType string, requestBody io.ReadCloser, configStruct
 			}
 
 			if err != nil {
-				return dbng.PipelineNoChange, err
+				return db.PipelineNoChange, err
 			}
 
 			if part.FormName() == "paused" {
 				pausedValue, err := ioutil.ReadAll(part)
 				if err != nil {
-					return dbng.PipelineNoChange, err
+					return db.PipelineNoChange, err
 				}
 
 				if string(pausedValue) == "true" {
-					pausedState = dbng.PipelinePaused
+					pausedState = db.PipelinePaused
 				} else if string(pausedValue) == "false" {
-					pausedState = dbng.PipelineUnpaused
+					pausedState = db.PipelineUnpaused
 				} else {
-					return dbng.PipelineNoChange, ErrInvalidPausedValue
+					return db.PipelineNoChange, ErrInvalidPausedValue
 				}
 			} else {
 				partContentType := part.Header.Get("Content-type")
 				_, err := requestToConfig(partContentType, part, configStructure)
 				if err != nil {
-					return dbng.PipelineNoChange, ErrMalformedRequestPayload
+					return db.PipelineNoChange, ErrMalformedRequestPayload
 				}
 			}
 		}
 	default:
-		return dbng.PipelineNoChange, ErrStatusUnsupportedMediaType
+		return db.PipelineNoChange, ErrStatusUnsupportedMediaType
 	}
 
 	return pausedState, nil
 }
 
-func saveConfigRequestUnmarshaler(r *http.Request) (atc.Config, dbng.PipelinePausedState, error) {
+func saveConfigRequestUnmarshaler(r *http.Request) (atc.Config, db.PipelinePausedState, error) {
 	var configStructure interface{}
 	pausedState, err := requestToConfig(r.Header.Get("Content-Type"), r.Body, &configStructure)
 	if err != nil {
-		return atc.Config{}, dbng.PipelineNoChange, err
+		return atc.Config{}, db.PipelineNoChange, err
 	}
 
 	var config atc.Config
@@ -253,15 +250,22 @@ func saveConfigRequestUnmarshaler(r *http.Request) (atc.Config, dbng.PipelinePau
 
 	decoder, err := mapstructure.NewDecoder(msConfig)
 	if err != nil {
-		return atc.Config{}, dbng.PipelineNoChange, ErrFailedToConstructDecoder
+		return atc.Config{}, db.PipelineNoChange, ErrFailedToConstructDecoder
 	}
 
 	if err := decoder.Decode(configStructure); err != nil {
-		return atc.Config{}, dbng.PipelineNoChange, ErrCouldNotDecode
+		return atc.Config{}, db.PipelineNoChange, ErrCouldNotDecode
 	}
 
-	if len(md.Unused) != 0 {
-		return atc.Config{}, dbng.PipelineNoChange, ExtraKeysError{extraKeys: md.Unused}
+	nestedUnused := []string{}
+	for _, unused := range md.Unused {
+		if strings.Contains(unused, ".") {
+			nestedUnused = append(nestedUnused, unused)
+		}
+	}
+
+	if len(nestedUnused) != 0 {
+		return atc.Config{}, db.PipelineNoChange, ExtraKeysError{extraKeys: nestedUnused}
 	}
 
 	return config, pausedState, nil

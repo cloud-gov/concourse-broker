@@ -3,13 +3,16 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/18F/concourse-broker/broker"
-	"github.com/18F/concourse-broker/config"
-	"github.com/18F/concourse-broker/logger"
-	"github.com/pivotal-cf/brokerapi"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+
+	"github.com/18F/concourse-broker/broker"
+	"github.com/18F/concourse-broker/concourse"
+	"github.com/18F/concourse-broker/config"
+	"github.com/18F/concourse-broker/logger"
+	"github.com/pivotal-cf/brokerapi"
 )
 
 func loadServices() ([]brokerapi.Service, error) {
@@ -42,6 +45,16 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	// Update team credentials if 0th instance
+	appID := os.Getenv("CF_INSTANCE_INDEX")
+	if appID == "0" || appID == "" {
+		concourseClient := concourse.NewClient(env, logger)
+		if err := concourseClient.UpdateTeams(); err != nil {
+			log.Fatalln(err)
+		}
+	}
+
 	serviceBroker := broker.New(services, logger, env)
 	brokerAPI := brokerapi.New(serviceBroker, logger, credentials)
 	http.Handle("/", brokerAPI)

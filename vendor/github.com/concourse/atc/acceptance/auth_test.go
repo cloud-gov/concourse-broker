@@ -13,29 +13,19 @@ import (
 	"github.com/onsi/gomega/gexec"
 
 	"github.com/concourse/atc"
-	"github.com/concourse/atc/dbng"
+	"github.com/concourse/atc/db"
 )
 
 var _ = Describe("Auth", func() {
 	var atcCommand *ATCCommand
 
 	BeforeEach(func() {
-		postgresRunner.Truncate()
-		dbngConn = dbng.Wrap(postgresRunner.Open())
-
-		teamFactory := dbng.NewTeamFactory(dbngConn)
-		defaultTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue()) // created by postgresRunner
-
-		_, _, err = defaultTeam.SavePipeline(atc.DefaultPipelineName, atc.Config{}, dbng.ConfigVersion(1), dbng.PipelineUnpaused)
+		_, _, err := defaultTeam.SavePipeline(atc.DefaultPipelineName, atc.Config{}, db.ConfigVersion(1), db.PipelineUnpaused)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
 		atcCommand.Stop()
-
-		Expect(dbngConn.Close()).To(Succeed())
 	})
 
 	Describe("GitHub Auth", func() {
@@ -94,9 +84,9 @@ var _ = Describe("Auth", func() {
 		})
 	})
 
-	Describe("No authentication via development mode", func() {
+	Describe("No authentication via no auth flag", func() {
 		BeforeEach(func() {
-			atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{}, DEVELOPMENT_MODE)
+			atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{}, NO_AUTH)
 			err := atcCommand.Start()
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -116,7 +106,7 @@ var _ = Describe("Auth", func() {
 			session, err := atcCommand.StartAndWait()
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(session).Should(gexec.Exit(1))
-			Expect(session.Err).To(gbytes.Say("must configure basic auth, OAuth, UAAAuth, or turn on development mode"))
+			Expect(session.Err).To(gbytes.Say("must configure basic auth, OAuth, UAAAuth, or provide no-auth flag"))
 		})
 	})
 
@@ -190,6 +180,7 @@ var _ = Describe("Auth", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(page.Navigate(atcCommand.URL("/teams/main/login"))).To(Succeed())
+
 			Eventually(page.FindByLink("login with Example")).Should(BeFound())
 		})
 

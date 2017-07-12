@@ -1,6 +1,6 @@
 package migrations
 
-import "github.com/BurntSushi/migration"
+import "github.com/concourse/atc/db/migration"
 
 func AddWorkerForeignKeyToVolumesAndContainers(tx migration.LimitedTx) error {
 	var err error

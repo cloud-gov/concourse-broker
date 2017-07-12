@@ -2,9 +2,7 @@ package acceptance_test
 
 import (
 	"errors"
-	"time"
 
-	"github.com/lib/pq"
 	"github.com/sclevine/agouti"
 
 	. "github.com/onsi/ginkgo"
@@ -14,27 +12,15 @@ import (
 	"code.cloudfoundry.org/urljoiner"
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/db"
-	"github.com/concourse/atc/db/dbfakes"
-	"github.com/concourse/atc/dbng"
 )
 
 var _ = Describe("Resource Pausing", func() {
 	var atcCommand *ATCCommand
-	var dbListener *pq.Listener
-	var pipelineDB db.PipelineDB
+	var pipeline db.Pipeline
 
 	BeforeEach(func() {
-		postgresRunner.Truncate()
-		dbConn = db.Wrap(postgresRunner.Open())
-		dbListener = pq.NewListener(postgresRunner.DataSourceName(), time.Second, time.Minute, nil)
-		dbngConn = dbng.Wrap(postgresRunner.Open())
-
-		teamFactory := dbng.NewTeamFactory(dbngConn)
-		defaultTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue()) // created by postgresRunner
-
-		_, _, err = defaultTeam.SavePipeline("some-pipeline", atc.Config{
+		var err error
+		pipeline, _, err = defaultTeam.SavePipeline("some-pipeline", atc.Config{
 			Jobs: atc.JobConfigs{
 				{
 					Name: "job-name",
@@ -48,39 +34,17 @@ var _ = Describe("Resource Pausing", func() {
 			Resources: atc.ResourceConfigs{
 				{Name: "resource-name"},
 			},
-		}, dbng.ConfigVersion(1), dbng.PipelineUnpaused)
+		}, db.ConfigVersion(1), db.PipelineUnpaused)
 		Expect(err).NotTo(HaveOccurred())
 
 		atcCommand = NewATCCommand(atcBin, 1, postgresRunner.DataSourceName(), []string{}, BASIC_AUTH)
 		err = atcCommand.Start()
 		Expect(err).NotTo(HaveOccurred())
 
-		bus := db.NewNotificationsBus(dbListener, dbConn)
-
-		pgxConn := postgresRunner.OpenPgx()
-		fakeConnector := new(dbfakes.FakeConnector)
-		retryableConn := &db.RetryableConn{Connector: fakeConnector, Conn: pgxConn}
-
-		lockFactory := db.NewLockFactory(retryableConn)
-		sqlDB = db.NewSQL(dbConn, bus, lockFactory)
-		teamDBFactory := db.NewTeamDBFactory(dbConn, bus, lockFactory)
-		teamDB := teamDBFactory.GetTeamDB(atc.DefaultTeamName)
-
-		savedPipeline, found, err := teamDB.GetPipelineByName("some-pipeline")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-
-		pipelineDBFactory := db.NewPipelineDBFactory(dbConn, bus, lockFactory)
-		pipelineDB = pipelineDBFactory.Build(savedPipeline)
 	})
 
 	AfterEach(func() {
 		atcCommand.Stop()
-
-		Expect(dbngConn.Close()).To(Succeed())
-
-		Expect(dbConn.Close()).To(Succeed())
-		Expect(dbListener.Close()).To(Succeed())
 	})
 
 	Describe("pausing a resource", func() {
@@ -109,6 +73,9 @@ var _ = Describe("Resource Pausing", func() {
 			Login(page, homepage())
 
 			Expect(page.Navigate(homepage())).To(Succeed())
+
+			Eventually(page.Find("#subpage .pipeline-graph")).Should(BeVisible())
+
 			Eventually(page.FindByLink("resource-name")).Should(BeFound())
 			Expect(page.FindByLink("resource-name").Click()).To(Succeed())
 
@@ -130,10 +97,10 @@ var _ = Describe("Resource Pausing", func() {
 			Expect(page.Find(".btn-pause.fl").Click()).To(Succeed())
 			Eventually(page.Find(".header i.fa-pause")).Should(BeFound())
 
-			resource, _, err := pipelineDB.GetResource("resource-name")
+			resource, _, err := pipeline.Resource("resource-name")
 			Expect(err).NotTo(HaveOccurred())
 
-			err = pipelineDB.SetResourceCheckError(resource, errors.New("failed to foo the bar"))
+			err = pipeline.SetResourceCheckError(resource, errors.New("failed to foo the bar"))
 			Expect(err).NotTo(HaveOccurred())
 
 			page.Refresh()

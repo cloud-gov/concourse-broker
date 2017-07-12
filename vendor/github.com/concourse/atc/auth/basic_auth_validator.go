@@ -9,10 +9,10 @@ import (
 )
 
 type basicAuthValidator struct {
-	team db.SavedTeam
+	team db.Team
 }
 
-func NewBasicAuthValidator(team db.SavedTeam) Validator {
+func NewBasicAuthValidator(team db.Team) Validator {
 	return basicAuthValidator{
 		team: team,
 	}
@@ -26,7 +26,7 @@ func (v basicAuthValidator) IsAuthenticated(r *http.Request) bool {
 	}
 
 	return v.correctCredentials(
-		v.team.BasicAuth.BasicAuthUsername, v.team.BasicAuth.BasicAuthPassword,
+		v.team.BasicAuth().BasicAuthUsername, v.team.BasicAuth().BasicAuthPassword,
 		username, password,
 	)
 }

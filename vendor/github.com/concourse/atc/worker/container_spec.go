@@ -2,10 +2,9 @@ package worker
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
-	"github.com/concourse/atc"
+	"github.com/concourse/atc/creds"
 )
 
 type WorkerSpec struct {
@@ -20,30 +19,38 @@ type ContainerSpec struct {
 	Tags      []string
 	TeamID    int
 	ImageSpec ImageSpec
-	Ephemeral bool
 	Env       []string
 
-	// Not Copy-on-Write. Used for a single mount in Get containers.
-	Inputs []VolumeMount
+	// Working directory for processes run in the container.
+	Dir string
 
-	// Copy-on-Write. Used for mounting multiple resources into a Put container.
-	Outputs []VolumeMount
+	// Inputs to provide to the container. Inputs with a volume local to the
+	// selected worker will be made available via a COW volume; others will be
+	// streamed.
+	Inputs []InputSource
+
+	// Outputs for which volumes should be created and mounted into the container.
+	Outputs OutputPaths
 
 	// Optional user to run processes as. Overwrites the one specified in the docker image.
 	User string
 }
 
+// OutputPaths is a mapping from output name to its path in the container.
+type OutputPaths map[string]string
+
 type ImageSpec struct {
-	ResourceType           string
-	ImageURL               string
-	ImageResource          *atc.ImageResource
-	ImageVolumeAndMetadata ImageVolumeAndMetadata
-	Privileged             bool
+	ResourceType        string
+	ImageURL            string
+	ImageResource       *ImageResource
+	ImageArtifactSource ArtifactSource
+	ImageArtifactName   ArtifactName
+	Privileged          bool
 }
 
-type ImageVolumeAndMetadata struct {
-	Volume         Volume
-	MetadataReader io.ReadCloser
+type ImageResource struct {
+	Type   string
+	Source creds.Source
 }
 
 func (spec ContainerSpec) WorkerSpec() WorkerSpec {

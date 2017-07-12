@@ -46,8 +46,6 @@ func (resource *resource) runScript(
 	input interface{},
 	output interface{},
 	logDest io.Writer,
-	inputSource ArtifactSource,
-	inputDestination ArtifactDestination,
 	recoverable bool,
 ) ifrit.Runner {
 	return ifrit.RunFunc(func(signals <-chan os.Signal, ready chan<- struct{}) error {
@@ -93,13 +91,6 @@ func (resource *resource) runScript(
 				return err
 			}
 		} else {
-			if inputSource != nil {
-				err := inputSource.StreamTo(inputDestination)
-				if err != nil {
-					return err
-				}
-			}
-
 			process, err = resource.container.Run(garden.ProcessSpec{
 				Path: path,
 				Args: args,
